@@ -1,0 +1,10 @@
+{
+  "domain": "cinema_control",
+  "name": "Kinosteuerung",
+  "version": "0.2.27",
+  "config_flow": true,
+  "dependencies": ["frontend", "http", "websocket_api", "panel_custom"],
+  "requirements": [],
+  "iot_class": "local_polling",
+  "codeowners": []
+}

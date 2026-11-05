@@ -1,0 +1,22 @@
+# Publish only the integration and its installation documentation.
+# Local configuration, keys, reports, backups, tests and tools stay ignored.
+*
+!/.gitignore
+!/README.md
+!/custom_components/
+!/custom_components/cinema_control/
+!/custom_components/cinema_control/*.py
+!/custom_components/cinema_control/manifest.json
+!/custom_components/cinema_control/strings.json
+!/custom_components/cinema_control/translations/
+!/custom_components/cinema_control/translations/*.json
+!/custom_components/cinema_control/frontend/
+!/custom_components/cinema_control/frontend/cinema-panel.js
+!/custom_components/cinema_control/frontend/cinema-panel.css
+!/custom_components/cinema_control/frontend/app-catalog.js
+!/custom_components/cinema_control/frontend/app-icons/
+!/custom_components/cinema_control/frontend/app-icons/*.svg
+!/custom_components/cinema_control/frontend/app-icons/SOURCES.md
+
+__pycache__/
+*.py[cod]

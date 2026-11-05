@@ -1,0 +1,35 @@
+{
+  "title": "Kinosteuerung",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Kinosteuerung einrichten",
+        "description": "Verwalte Filmfavoriten und vorhandene Fernseher oder Zuspieler im neuen Seitenleisten-Eintrag Kinosteuerung. Geräte werden anschließend dort zugeordnet. Es werden keine zusätzlichen Pakete installiert."
+      }
+    },
+    "abort": {"already_configured": "Die Kinosteuerung ist bereits eingerichtet."}
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Fernseher aus der Hauptinstanz",
+        "description": "Verwende den Samsung, der in deinem normalen Home Assistant bereits eingerichtet ist. Der lokale HA-Test kann im bisherigen Netz bleiben. Trage den Zugriffsschlüssel nur hier ein. Leer lassen behält einen vorhandenen Schlüssel bei unveränderter Adresse. Geräte werden vor dem Speichern nur lesend geprüft.",
+        "data": {
+          "use_main_ha": "Vorhandenen Samsung aus der Hauptinstanz verwenden",
+          "main_ha_url": "Adresse deiner normalen Home-Assistant-Instanz",
+          "main_ha_token": "Zugriffsschlüssel der Hauptinstanz",
+          "main_ha_tv": "TV-Entität in der Hauptinstanz (media_player.…)",
+          "main_ha_remote": "Zugehörige Fernbedienung (remote.…, optional)",
+          "main_ha_netflix": "Netflix-Titelstart für den ersten TV aktivieren (benötigt die Aktion cinema_netflix_wohnzimmer auf der Hauptinstanz)",
+          "main_ha_additional": "Weitere Geräte der Hauptinstanz (je Zeile media_player.…, optional gefolgt von , remote.…)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Zugriff verweigert. Bitte einen gültigen Zugriffsschlüssel eingeben. Bei einer anderen Adresse ist eine neue Schlüsseleingabe nötig.",
+      "invalid_device": "TV nicht gefunden oder kein nativer Samsung-TV. Die optionale Fernbedienung muss zum selben Gerät gehören.",
+      "invalid_input": "Bitte eine gültige HTTP-/HTTPS-Adresse und gültige Gerätekennungen angeben.",
+      "cannot_connect": "Die Hauptinstanz ist nicht erreichbar oder liefert keine gültige Antwort. Adresse und Verbindung prüfen."
+    }
+  }
+}
