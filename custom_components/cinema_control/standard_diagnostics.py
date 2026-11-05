@@ -188,11 +188,12 @@ async def async_collect_standard_diagnostics(manager, room: dict, target: dict, 
             limitations.append(code)
     if extra_owner is not None:
         limitations.append("extra_app_matches_standard")
-    # Only protocol candidates are common to all apps. A configured Netflix route is not batch evidence.
+    # App-specific protocol candidates keep their public app scope. A configured
+    # Netflix route is not batch evidence for the other standard apps.
     report["candidates"] = [deepcopy(candidate) for candidate in captured.get("candidates", [])
                             if candidate.get("scope") == "device_protocol" and not candidate.get("id", "").startswith("configured_")]
     for check in report.get("checks", []):
-        check["scope"] = "device_all_apps"
+        check["scope"] = "selected_app" if check.get("id") == "samsung_app_status" else "device_all_apps"
         if check.get("id") == "smart_hub_preview":
             check["selected_app_match"] = "not_determined"
     report.setdefault("checks", []).append({"id": "standard_app_listing", "status": installed["status"],
@@ -202,6 +203,8 @@ async def async_collect_standard_diagnostics(manager, room: dict, target: dict, 
 
     sources, listing_available, listing_truncated = _source_listing(manager, target)
     preview_owners, preview_available = _preview_presence(captured)
+    http_checks = [check for check in captured.get("checks", [])
+                   if check.get("id") == "samsung_app_status"]
     if listing_truncated:
         limitations.append("app_listing_truncated")
     results = []
@@ -211,7 +214,9 @@ async def async_collect_standard_diagnostics(manager, room: dict, target: dict, 
         provider = _provider(app)
         from_preview = (provider or app["id"]) in preview_owners
         from_installed = app["id"] in installed["detected"]
-        if matches or from_preview or from_installed:
+        from_http = [check for check in http_checks if check.get("app") == (provider or app["id"])
+                     and check.get("status") == "available"]
+        if matches or from_preview or from_installed or from_http:
             presence = "detected"
         else:
             presence = "not_listed" if listing_available or preview_available or installed["status"] == "available" else "not_checked"
@@ -222,6 +227,8 @@ async def async_collect_standard_diagnostics(manager, room: dict, target: dict, 
             notes.append("public_app_id_in_shared_preview")
         if from_installed:
             notes.append("reported_by_paired_tv_app_list")
+        if from_http:
+            notes.append("reported_by_independent_http_app_status")
         if presence == "not_listed":
             notes.extend(("not_in_available_listing", "listing_may_be_incomplete"))
         elif presence == "not_checked":
@@ -229,6 +236,8 @@ async def async_collect_standard_diagnostics(manager, room: dict, target: dict, 
         if not preview_available:
             notes.append("shared_preview_unavailable")
         evidence = _selected_format_level(captured, provider)
+        if evidence == "not_checked" and from_http:
+            evidence = "service_detected"
         if evidence == "start_format_detected":
             notes.append("start_format_requires_device_confirmation")
         version = _app_version(manager, room, target, app, matches)
@@ -239,8 +248,9 @@ async def async_collect_standard_diagnostics(manager, room: dict, target: dict, 
                         "playback_verified": False, "notes": notes})
     report["app_results"] = results
     report["shared_capture"] = {"generic_capture_count": 1, "installed_app_query_count": int(installed["attempted"]),
-                                "per_app_network_requests": False,
-                                "app_listing_source": "samsung_installed_apps" if installed["status"] == "available" else "ha_source_list" if listing_available else "unavailable",
+                                "per_app_network_requests": any(check.get("attempted") is True for check in http_checks),
+                                "http_app_status_request_count": sum(check.get("attempted") is True for check in http_checks),
+                                "app_listing_source": "samsung_installed_apps" if installed["status"] == "available" else "ha_source_list" if listing_available else "http_app_status" if any(check.get("status") == "available" for check in http_checks) else "unavailable",
                                 "app_listing_complete": False, "preview_available": preview_available}
     fingerprint = {"platform": platform, "device": report["device"], "reported_firmware": report["reported"]["firmware"],
                    "catalog": [{"id": app["id"], "name": _name_key(app["name"]), "version": app["version"],

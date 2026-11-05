@@ -144,6 +144,8 @@ def _decoded(value: object) -> object:
 class SamsungNetflixLauncher:
     """A single selected TV; no HA REST action, stored preview or app-only fallback."""
 
+    requires_current_preview = True
+
     def __init__(self, access: TVAccess, *, validate: Callable[[], None]) -> None:
         self.access = access
         self.validate = validate

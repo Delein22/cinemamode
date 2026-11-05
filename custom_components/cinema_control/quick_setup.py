@@ -23,10 +23,11 @@ _POLL_INTERVAL = 0.05
 _OUTCOMES = frozenset({"playing", "profile_selection", "app_only", "title_page", "wrong_title", "failed"})
 _SAFE_BEFORE_SEND = frozenset({"unsupported_adapter", "start_format_unknown", "netflix_start_format_unknown",
                               "unsupported_content", "invalid_content", "app_source_unavailable",
-                              "app_source_ambiguous", "profile_required", "samsung_youtube_pairing"})
+                              "app_source_ambiguous", "profile_required", "samsung_youtube_pairing",
+                              "dial_not_supported", "dial_unavailable"})
 _PUBLIC_ERRORS = _SAFE_BEFORE_SEND | {"busy", "start_outcome_unknown", "start_failed", "transport_unavailable",
                                     "netflix_start_unavailable", "netflix_start_rejected", "not_found", "invalid",
-                                    "profile_timeout", "profile_not_confirmed"}
+                                    "profile_timeout", "profile_not_confirmed", "dial_start_rejected", "dial_start_unknown"}
 _EVIDENCE = {"confirmed_cases": 1, "titles": 1, "source": "user", "situations": 1,
              "establishes_family_compatibility": False}
 _MESSAGES = {
@@ -66,6 +67,37 @@ def _public_profile(profile: dict | None) -> dict | None:
             "confirmed_at": profile["confirmed_at"], "evidence": deepcopy(_EVIDENCE),
             "requires_recheck": not bool(profile["identity"]["device"].get("firmware")
                                           and profile["identity"]["app"].get("version"))}
+
+
+def _available_routes(options: list[dict], report: dict, platform: str, app: str) -> tuple[list[dict], list[dict]]:
+    """Do not repeat a preview-dependent route when this capture disproved its prerequisite."""
+    checks = report.get("checks", [])
+    preview_unavailable = any(check.get("id") == "smart_hub_preview"
+                              and check.get("status") in ("unavailable", "skipped") for check in checks)
+    dial_observed = (report.get("identity_match") is not False and any(
+        check.get("id") == "samsung_app_status" and check.get("app") == "netflix"
+        and check.get("protocol") == "dial" and check.get("status") == "available" for check in checks))
+    available, skipped = [], []
+    for option in options:
+        if not option.get("can_test"):
+            continue
+        reason = None
+        if option["id"] == "samsung_dial_netflix" and not dial_observed:
+            reason = "service_not_observed"
+        elif (platform == "samsungtv" and preview_unavailable
+              and (option["id"] == "samsung_ws" or option["id"] == "existing" and option.get("requires_preview") is True)):
+            reason = "preview_unavailable"
+        if reason:
+            skipped.append({"adapter_id": option["id"], "reason": reason})
+        else:
+            available.append(option)
+    return available, skipped
+
+
+def _has_netflix_bridge(options: list[dict], app: str) -> bool:
+    """An existing main-instance route does not require local Samsung WS access."""
+    return app == "netflix" and any(option.get("id") == "existing" and option.get("can_test") is True
+                                    and option.get("requires_preview") is False for option in options)
 
 
 class QuickSetup:
@@ -302,11 +334,18 @@ class QuickSetup:
         session = {"id": session_id or uuid4().hex, "state": "running", "app": favorite["provider"], "favorite_id": record_id(favorite["id"]),
                    "favorite": deepcopy(favorite), "created_at": _now(), "attempts": [], "candidates": [], "next_index": 0}
         self._sessions[key] = session
+        pairing_error = None
         try:
             if self.manager.platform(target["entity_id"]) == "samsungtv":
                 access = self.manager.device_access.resolve(self.manager, room, target)
-                if access is None or access.pairing is None:
-                    await self.manager.async_quick_pair(room, target, force=False)
+                bridge_available = _has_netflix_bridge(adapter_options(self.manager, room, target, session["app"]), session["app"])
+                if (access is None or access.pairing is None) and not bridge_available:
+                    try:
+                        await self.manager.async_quick_pair(room, target, force=False)
+                    except (CinemaError, TimeoutError) as error:
+                        # DIAL can work without a Samsung remote-control authorization.
+                        # Keep the failure, but let read-only discovery find that route.
+                        pairing_error = error
             report = await self.manager.diagnose(room, target, session["app"])
         except (CinemaError, TimeoutError) as error:
             self._connection_failure(room, target, session, error)
@@ -320,10 +359,17 @@ class QuickSetup:
         authorization = report.get("connection", {}).get("authorization")
         paired_response = any(check.get("status") == "available" and check.get("id") in
                               ("smart_hub_preview", "standard_app_listing") for check in report.get("checks", []))
-        if self.manager.platform(target["entity_id"]) == "samsungtv" and authorization != "verified" and not paired_response:
-            session["state"] = "connection_required"
+        available, skipped = _available_routes(adapter_options(self.manager, room, target, session["app"]), report,
+                                               self.manager.platform(target["entity_id"]), session["app"])
+        safe["quick_setup_skipped_routes"] = skipped
+        if (self.manager.platform(target["entity_id"]) == "samsungtv" and authorization != "verified" and not paired_response
+                and not any(option["id"] == "samsung_dial_netflix" for option in available)
+                and not _has_netflix_bridge(available, session["app"])):
+            if pairing_error is not None:
+                self._connection_failure(room, target, session, pairing_error)
+            else:
+                session["state"] = "connection_required"
             return
-        available = [item for item in adapter_options(self.manager, room, target, session["app"]) if item["can_test"]]
         identity = self.manager._assistant_identity(room, target, session["app"])
         selector = getattr(self.manager, "_selected_start_profile", None)
         if callable(selector):
@@ -331,7 +377,7 @@ class QuickSetup:
         else:
             confirmed = self.manager.start_assistant.matching_profile(room, target, session["app"], identity)
             preferred = confirmed or self.matching_profile(room, target, session["app"], identity)
-        ordered = ([preferred["adapter_id"]] if preferred else []) + ["existing", "samsung_ws", "android_url", "webos_app"]
+        ordered = ([preferred["adapter_id"]] if preferred else []) + ["existing", "samsung_ws", "samsung_dial_netflix", "android_url", "webos_app"]
         by_id = {item["id"]: item for item in available}
         for adapter_id in dict.fromkeys(ordered):
             if adapter_id in by_id and len(session["candidates"]) < 3:

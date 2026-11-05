@@ -2,7 +2,7 @@
 
 Benutzerdefinierte Home-Assistant-Integration mit einer eigenen Oberfläche für TV-Steuerung, Streaming-Favoriten und Direktstart-Diagnosen.
 
-**Version 0.2.30 · Beta**
+**Version 0.2.31 · Beta**
 
 ## Installation
 
@@ -50,16 +50,20 @@ Ein angenommener Befehl oder HTTP-Erfolg bestätigt noch keine Wiedergabe. Der e
 
 Bei unklarem Ausgang nach einem gesendeten Befehl startet der Assistent keine weiteren Versuche automatisch. Ein Diagnosebericht lässt sich bei Bedarf herunterladen; Zugangsdaten und rohe Vorschauwerte werden nicht exportiert.
 
+Bei Samsung kann die Anmeldung erfolgreich sein, obwohl die Firmware weder eine App-Liste noch die Home-Vorschau liefert. Die Einrichtung prüft dann unabhängige HTTP-Dienste. Antwortet der Netflix-DIAL-Dienst mit einem passenden App-Status, steht zusätzlich **Netflix · DIAL-Inhaltsaufruf** als experimenteller Titelstartweg bereit. Er benötigt keine Vorschaukachel. Das verwendete Netflix-Titelformat ist im [DIAL-Service von ConnectSDK](https://github.com/ConnectSDK/Connect-SDK-Android-Core/blob/master/src/com/connectsdk/service/DIALService.java) beschrieben; ob die jeweilige Netflix-App es unterstützt, wird am Gerät geprüft. Erst die Bestätigung des tatsächlich laufenden Titels speichert diesen Weg für spätere Favoritenstarts.
+
 ## Standarddiagnose ohne Titelstart
 
 1. Den Fernseher oder Smart-Monitor einschalten.
-2. In **Kinosteuerung → Einrichtung → Diagnose öffnen** die lokale TV-IP und das Gerätesystem auswählen.
+2. In **Kinosteuerung → Einrichtung → Standarddiagnose öffnen** die lokale TV-IP und das Gerätesystem auswählen.
 3. **Verbinden und Standarddiagnose starten** wählen. Eine Samsung-Freigabe gegebenenfalls am Gerät bestätigen.
 4. Den gemeinsamen Bericht herunterladen.
 
 Die Standardliste umfasst **Netflix, Apple TV, MagentaTV, RTL+, Plex und YouTube**. Eine zusätzliche App kann optional eingetragen werden. Für diese Diagnose muss kein HA-Raum eingerichtet sein.
 
 Die Diagnose startet keine Filme und installiert keine Software auf dem TV. Sie unterscheidet erkannte Apps, nicht gemeldete Einträge und nicht durchführbare Prüfungen. Eine unvollständige App-Liste beweist nicht, dass eine App fehlt.
+
+Zusätzlich zur gemeinsamen App- und Vorschauabfrage liest sie bei Samsung bekannte **REST-Appstatusdienste** sowie die **DIAL-Statusdienste für Netflix und YouTube**. Diese begrenzten HTTP-Abfragen verändern nichts am Fernseher und werden unabhängig von der Vorschau ausgewertet. Erreichbarkeit, App-Status und bestätigte Titelwiedergabe bleiben getrennte Nachweise. Für einen echten Startversuch anschließend **Direktstart einrichten → TV prüfen und Titel testen** mit einem eingerichteten Wiedergabeziel und Favoriten verwenden; eine reine Standarddiagnose kann keinen Startweg bestätigen.
 
 ## TV-Steuerung und Favoriten
 

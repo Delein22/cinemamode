@@ -20,7 +20,7 @@ from homeassistant.helpers.storage import Store
 from .const import DOMAIN, PROVIDERS
 from .models import CinemaError, content_url, entity_id, record_id
 
-ADAPTERS = frozenset({"existing", "samsung_ws", "android_url", "webos_app"})
+ADAPTERS = frozenset({"existing", "samsung_ws", "samsung_dial_netflix", "android_url", "webos_app"})
 SCENARIOS = ("app_open", "app_closed", "profile_selection")
 OUTCOMES = frozenset({"app_only", "profile_selection", "title_page", "playing", "wrong_title", "failed"})
 _PLATFORMS = frozenset({"samsungtv", "webostv", "androidtv", "androidtv_remote", "roku", "cast", "apple_tv", "other"})

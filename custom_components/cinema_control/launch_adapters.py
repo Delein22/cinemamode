@@ -22,7 +22,7 @@ from .models import CinemaError, content_url
 from .samsung_disney import disney_title_id
 from .samsung_youtube import _remote_url, samsung_youtube_trace_config, youtube_video_id
 
-ADAPTER_IDS = frozenset({"existing", "samsung_ws", "android_url", "webos_app"})
+ADAPTER_IDS = frozenset({"existing", "samsung_ws", "samsung_dial_netflix", "android_url", "webos_app"})
 _PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+")
 _WEBOS_APPS = {"netflix": "netflix", "youtube": "youtube.leanback.v4", "disney": "com.disney.disneyplus-prod",
                "prime": "amazon", "plex": "cdp-30", "apple": "com.apple.appletv"}
@@ -50,10 +50,15 @@ def adapter_options(manager, room: dict, target: dict, app: str) -> list[dict]:
     platform = manager.platform(target["entity_id"])
     result = [{"id":"existing", "label":"Bisheriger Startweg", "can_test":_existing_route(manager, room, target, provider),
                "reason":"Nur verfügbar, wenn bereits ein passender Startweg eingerichtet ist."}]
+    if provider == "netflix":
+        result[0]["requires_preview"] = bool(getattr(manager._netflix_launcher(room, target), "requires_current_preview", False))
     if platform == "samsungtv":
         access = manager.device_access.resolve(manager, room, target)
         result.append({"id":"samsung_ws", "label":"Samsung · aktuelle Vorschau", "can_test":bool(access and access.pairing),
                        "reason":"Benötigt eine erreichbare, gekoppelte Geräteverbindung und passende aktuelle Vorschau-Daten."})
+        if provider == "netflix":
+            result.append({"id":"samsung_dial_netflix", "label":"Netflix · DIAL-Inhaltsaufruf", "can_test":access is not None,
+                           "reason":"Prüft den Netflix-Dienst direkt per HTTP. Funktioniert unabhängig von der Home-Vorschau; Titelstart muss am TV bestätigt werden."})
     elif platform in ("androidtv", "androidtv_remote"):
         available = (manager.hass.services.has_service("androidtv", "adb_command") if platform == "androidtv"
                      else manager.has_feature(target["entity_id"], F.PLAY_MEDIA)
@@ -240,6 +245,22 @@ async def dispatch(manager, room: dict, target: dict, favorite: dict, adapter_id
             raise CinemaError("Der vorhandene Startweg ist fehlgeschlagen.", "start_failed")
     elif adapter_id == "samsung_ws":
         await _samsung_dispatch(manager, room, target, favorite)
+    elif adapter_id == "samsung_dial_netflix":
+        from .samsung_dial import async_launch_netflix_dial
+
+        title = urlsplit(favorite["url"]).path.rstrip("/").rsplit("/", 1)[-1]
+        access = manager.device_access.resolve(manager, room, target)
+        signature = manager.device_access.signature(room, target)
+
+        def validate():
+            current_room, current_target = manager.resolve(room["id"], target["id"])
+            if (current_target["entity_id"] != player
+                    or manager.device_access.signature(current_room, current_target) != signature
+                    or manager.device_access.resolve(manager, current_room, current_target) != access):
+                raise CinemaError("Die Geräteverbindung wurde geändert. Bitte erneut prüfen.", "stale_device")
+            manager._check_prepared(current_room, current_target)
+
+        await async_launch_netflix_dial(access, title, validate)
     elif adapter_id == "android_url":
         if manager.platform(player) == "androidtv":
             package = target.get("apps", {}).get(provider, {}).get("app_id") or PROVIDERS[provider]["package"]

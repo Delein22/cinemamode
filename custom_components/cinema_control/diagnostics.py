@@ -18,6 +18,7 @@ from .const import DOMAIN, PROVIDERS, VERSION
 from .models import CinemaError
 from .device_access import AccessSource, TVAccess
 from .samsung_capture import SamsungCapture, async_capture_samsung
+from .samsung_http_probe import async_probe_samsung_apps, parse_dial_service
 from .samsung_youtube import (
     SAMSUNG_DEFAULT_CLIENT_NAME, samsung_youtube_pairing, samsung_youtube_trace_config,
 )
@@ -64,7 +65,8 @@ _PUBLIC_CONSTANTS = {"module": {"LaunchHelper"}, "func": {"deeplink", "native", 
                      "placement": {"dedicated_row"}, "placementDetail": {"eden_row"},
                      "distributionPartner": {"samsung"}}
 _CHECK_SOURCES = {"samsung_device_api": "samsung_http_api", "dial_discovery": "dial_discovery",
-                  "smart_hub_preview": "samsung_eden", "manufacturer_protocol": "integration_capabilities"}
+                  "smart_hub_preview": "samsung_eden", "samsung_app_status": "samsung_http_app_status",
+                  "manufacturer_protocol": "integration_capabilities"}
 
 
 def _record_check(report: dict, check: dict) -> None:
@@ -78,8 +80,12 @@ def _record_check(report: dict, check: dict) -> None:
             known_patterns = {"youtube_launcher_with_ephemeral_id", "netflix_watch_url", "action_play_url"}
             has_format = check.get("templates") or known_patterns.intersection(check.get("payload_patterns", {}))
             level = "start_format_detected" if has_format else "service_detected"
-        elif check["status"] == "unavailable":
+        elif (check["status"] == "unavailable" and not
+              (check["id"] == "smart_hub_preview" and check.get("reason") == "response_timeout"
+               and report.get("connection", {}).get("authorization") == "verified")):
             level = "access_blocked"
+    elif check["id"] == "samsung_app_status" and check["status"] == "available":
+        level = "service_detected"
     check["evidence_level"] = level
     report["checks"].append(check)
 
@@ -195,6 +201,7 @@ async def _bounded_get(session, url: str) -> tuple[int, bytes, str | None]:
 
 
 async def _samsung_http(session, host: IPv4Address, report: dict) -> None:
+    application_service = None
     try:
         status, body, _ = await _bounded_get(session, f"http://{host}:8001/api/v2/")
         check = {"id": "samsung_device_api", "status": "available" if status == 200 else "unavailable", "http_status": status}
@@ -227,13 +234,17 @@ async def _samsung_http(session, host: IPv4Address, report: dict) -> None:
         status, _, application_url = await _bounded_get(session, f"http://{host}:7678/nservice/")
         check = {"id": "dial_discovery", "status": "available" if status == 200 else "unavailable", "http_status": status}
         if status == 200 and isinstance(application_url, str) and len(application_url) <= 512:
-            parsed = urlsplit(application_url)
-            if (parsed.scheme == "http" and parsed.hostname == str(host) and parsed.port in (8001, 8002, 8080)
-                    and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment):
-                check["application_service"] = {"port": parsed.port, "route": "ws_app" if parsed.path.rstrip("/") == "/ws/app" else "other"}
+            application_service = parse_dial_service(host, application_url)
+            if application_service is not None:
+                check["application_service"] = dict(application_service)
         _record_check(report, check)
     except (ClientError, TimeoutError, OSError, ValueError):
         _record_check(report, {"id": "dial_discovery", "status": "unavailable"})
+    if report.get("identity_match") is not False:
+        # These status requests do not need the optional EDEN or app-list replies.
+        # They never launch an app and never establish content compatibility.
+        for check in await async_probe_samsung_apps(session, host, application_service):
+            _record_check(report, check)
 
 
 def _template_layout(value: object, key: str = "", depth: int = 0) -> object:
@@ -380,6 +391,13 @@ def _candidates(report: dict, provider: str | None) -> list[dict]:
                        "scope": "device_protocol", "evidence_level": report.get("evidence_level", "not_checked"), "playback_verified": False})
     if provider and report["capabilities"].get(provider + "_title"):
         result.append({"id": "configured_" + provider + "_route", "status": "configured", "playback_verified": False})
+    if report["platform"] == "samsungtv" and provider == "netflix" and any(
+            check.get("id") == "samsung_app_status" and check.get("app") == "netflix"
+            and check.get("protocol") == "dial" and check.get("status") == "available"
+            for check in report["checks"]):
+        result.append({"id": "samsung_dial_netflix", "app": "netflix", "status": "candidate",
+                       "scope": "device_protocol", "evidence_level": "service_detected",
+                       "playback_verified": False, "requires_title_test": True})
     return result
 
 
@@ -393,8 +411,13 @@ def _adapter_descriptors(platform: str) -> list[dict]:
     }.get(platform)
     if descriptor is None:
         return []
-    return [{"id": descriptor[0], "protocol": descriptor[1], "passive_capture_implemented": descriptor[2],
-             "protocol_candidate_only": True, "executable": False, "requires_per_app_confirmation": True}]
+    result = [{"id": descriptor[0], "protocol": descriptor[1], "passive_capture_implemented": descriptor[2],
+               "protocol_candidate_only": True, "executable": False, "requires_per_app_confirmation": True}]
+    if platform == "samsungtv":
+        result.append({"id": "samsung_dial_netflix", "app": "netflix", "protocol": "dial_json_content",
+                       "passive_capture_implemented": True, "protocol_candidate_only": True,
+                       "executable": False, "requires_per_app_confirmation": True})
+    return result
 
 
 def _selected_format_level(report: dict, provider: str | None) -> str:
@@ -434,12 +457,12 @@ def _technical_values(report: dict) -> dict:
             result[group + "." + name] = values.get(name)
     checks = report.get("checks")
     checks = checks if isinstance(checks, list) else []
-    for check_id in ("device_metadata", "samsung_device_api", "dial_discovery", "smart_hub_preview", "standard_app_listing", "manufacturer_protocol", "collection"):
+    for check_id in ("device_metadata", "samsung_device_api", "dial_discovery", "smart_hub_preview", "standard_app_listing", "samsung_app_status", "manufacturer_protocol", "collection"):
         values = []
         for check in checks:
             if not isinstance(check, dict) or check.get("id") != check_id:
                 continue
-            value = {key: check.get(key) for key in ("status", "reason", "phase", "port", "http_status", "close_code", "application_service", "evidence_level", "templates", "templates_truncated", "known_app_ids", "known_constants", "query_keys", "identity_match", "firmware_disagreement") if key in check}
+            value = {key: check.get(key) for key in ("status", "reason", "phase", "app", "protocol", "state", "port", "http_status", "close_code", "application_service", "evidence_level", "templates", "templates_truncated", "known_app_ids", "known_constants", "query_keys", "identity_match", "firmware_disagreement") if key in check}
             capture = check.get("capture")
             value["capture_source"] = capture.get("source") if isinstance(capture, dict) else check.get("source")
             shapes = check.get("field_shapes")
