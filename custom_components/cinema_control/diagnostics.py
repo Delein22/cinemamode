@@ -11,13 +11,15 @@ import json
 import re
 from urllib.parse import parse_qsl, urlsplit
 
-from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType
+from aiohttp import ClientError, ClientSession, ClientTimeout
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import DOMAIN, PROVIDERS, VERSION
 from .models import CinemaError
+from .device_access import AccessSource, TVAccess
+from .samsung_capture import SamsungCapture, async_capture_samsung
 from .samsung_youtube import (
-    SAMSUNG_DEFAULT_CLIENT_NAME, _remote_url, samsung_youtube_pairing, samsung_youtube_trace_config,
+    SAMSUNG_DEFAULT_CLIENT_NAME, samsung_youtube_pairing, samsung_youtube_trace_config,
 )
 
 OBSERVATIONS = frozenset({"not_tested", "app_only", "profile_selection", "title_page", "playing", "failed"})
@@ -341,31 +343,29 @@ def summarize_preview(data: object) -> dict:
             "values_included": False}
 
 
-async def _samsung_preview(session, host, pairing, name, report: dict) -> None:
-    try:
-        async with asyncio.timeout(8):
-            async with session.ws_connect(_remote_url(host, pairing[0], name, pairing[1]), ssl=False, max_msg_size=2 * 1024 * 1024) as ws:
-                connected = False
-                for _ in range(32):
-                    message = await ws.receive()
-                    if message.type != WSMsgType.TEXT:
-                        break
-                    payload = message.json()
-                    if not isinstance(payload, dict):
-                        continue
-                    if payload.get("event") in ("ms.channel.unauthorized", "ms.channel.timeOut"):
-                        break
-                    if payload.get("event") == "ms.channel.connect" and not connected:
-                        await ws.send_json({"method": "ms.channel.emit", "params": {"event": "ed.edenApp.get", "to": "host"}})
-                        connected = True
-                    elif connected and payload.get("event") in ("ed.edenApp.get", "ed.edenApp.update"):
-                        summary = summarize_preview(payload.get("data"))
-                        _record_check(report, {"id": "smart_hub_preview", "status": "available",
-                                                 "scope": "device_all_apps", "selected_app_match": "not_determined", **summary})
-                        return
-    except (ClientError, TimeoutError, OSError, ValueError, RecursionError):
-        pass
-    _record_check(report, {"id": "smart_hub_preview", "status": "unavailable"})
+async def _samsung_preview(session, host, pairing, name, report: dict, *,
+                           capture: SamsungCapture | None = None,
+                           capture_sink: list | None = None) -> None:
+    """Project one shared transient capture; never attach raw payloads to the report."""
+    if capture is None:
+        access = TVAccess(host, pairing, name, AccessSource.NATIVE)
+        capture = await async_capture_samsung(access)
+    if capture_sink is not None:
+        capture_sink.append(capture)
+    report["connection"] = {"authorization": capture.authorization, **capture.details}
+    details = dict(capture.preview_details)
+    if capture.preview is not None:
+        try:
+            summary = summarize_preview(capture.preview)
+            _record_check(report, {"id": "smart_hub_preview", "status": "available",
+                                  "scope": "device_all_apps", "selected_app_match": "not_determined",
+                                  **details, **summary})
+            return
+        except (ValueError, TypeError, RecursionError):
+            details.update(phase="preview", reason="invalid_response")
+    _record_check(report, {"id": "smart_hub_preview",
+                          "status": "skipped" if capture.authorization == "not_checked" else "unavailable",
+                          **details})
 
 
 def _candidates(report: dict, provider: str | None) -> list[dict]:
@@ -420,6 +420,11 @@ def _technical_values(report: dict) -> dict:
     result = {"platform": report.get("platform"), "profile": report.get("profile"),
               "capabilities": report.get("capabilities"), "evidence_level": report.get("evidence_level"),
               "adapters": report.get("adapters"), "identity_match": report.get("identity_match")}
+    connection = report.get("connection")
+    if isinstance(connection, dict):
+        result["connection"] = {key: connection.get(key) for key in
+                                ("authorization", "phase", "port", "reason", "http_status", "close_code")
+                                if key in connection}
     for group, names in {"device": ("manufacturer", "model", "firmware"),
                          "reported": ("firmware", "app_version"),
                          "app": ("id", "provider", "version", "version_source", "evidence_level")}.items():
@@ -429,12 +434,12 @@ def _technical_values(report: dict) -> dict:
             result[group + "." + name] = values.get(name)
     checks = report.get("checks")
     checks = checks if isinstance(checks, list) else []
-    for check_id in ("device_metadata", "samsung_device_api", "dial_discovery", "smart_hub_preview", "manufacturer_protocol", "collection"):
+    for check_id in ("device_metadata", "samsung_device_api", "dial_discovery", "smart_hub_preview", "standard_app_listing", "manufacturer_protocol", "collection"):
         values = []
         for check in checks:
             if not isinstance(check, dict) or check.get("id") != check_id:
                 continue
-            value = {key: check.get(key) for key in ("status", "reason", "http_status", "application_service", "evidence_level", "templates", "templates_truncated", "known_app_ids", "known_constants", "query_keys", "identity_match", "firmware_disagreement") if key in check}
+            value = {key: check.get(key) for key in ("status", "reason", "phase", "port", "http_status", "close_code", "application_service", "evidence_level", "templates", "templates_truncated", "known_app_ids", "known_constants", "query_keys", "identity_match", "firmware_disagreement") if key in check}
             capture = check.get("capture")
             value["capture_source"] = capture.get("source") if isinstance(capture, dict) else check.get("source")
             shapes = check.get("field_shapes")
@@ -458,7 +463,9 @@ def diff_reports(previous: dict | None, current: dict) -> dict:
 
 
 async def async_collect_diagnostics(manager, room: dict, target: dict, app: str,
-                                    observation: str = "not_tested") -> dict:
+                                    observation: str = "not_tested", *,
+                                    samsung_capture: SamsungCapture | None = None,
+                                    capture_sink: list | None = None) -> dict:
     """Inspect the selected target only. Partial reports survive missing access."""
     app = _validate_app(manager, target, app)
     if observation not in OBSERVATIONS:
@@ -488,7 +495,7 @@ async def async_collect_diagnostics(manager, room: dict, target: dict, app: str,
     try:
         capabilities = manager.capabilities(room, target)
         report["capabilities"] = {key: value is True for key, value in capabilities.items() if key in _CAPABILITIES}
-        async with asyncio.timeout(14):
+        async with asyncio.timeout(18):
             try:
                 values, source = await _device_metadata(manager, player, bridge)
                 report["device"] = values
@@ -508,9 +515,12 @@ async def async_collect_diagnostics(manager, room: dict, target: dict, app: str,
                                              trace_configs=[samsung_youtube_trace_config()]) as session:
                         tasks = [_samsung_http(session, host, report)]
                         if pairing is not None:
-                            tasks.append(_samsung_preview(session, host, pairing, name, report))
+                            tasks.append(_samsung_preview(session, host, pairing, name, report,
+                                                          capture=samsung_capture, capture_sink=capture_sink))
                         else:
                             _record_check(report, {"id": "smart_hub_preview", "status": "skipped", "reason": "existing_pairing_required"})
+                            report["connection"] = {"authorization": "not_checked", "phase": "authorization",
+                                                    "reason": "existing_pairing_required"}
                         await asyncio.gather(*tasks)
             else:
                 _record_check(report, {"id": "manufacturer_protocol", "status": "not_implemented"})

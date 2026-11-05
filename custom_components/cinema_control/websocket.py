@@ -67,7 +67,7 @@ def ws_subscribe(hass, connection, msg) -> None:
 
 @websocket_api.websocket_command({
     vol.Required("type"): "cinema_control/command",
-    vol.Required("operation"): vol.In(("save_room", "save_favorite", "delete_room", "delete_favorite", "start", "app", "prepare_netflix", "confirm_profile", "cancel", "control", "list_apps", "uninstall_app", "pair_youtube", "diagnose", "assistant", "standard_diagnose")),
+    vol.Required("operation"): vol.In(("save_room", "save_favorite", "delete_room", "delete_favorite", "start", "app", "prepare_netflix", "confirm_profile", "cancel", "control", "list_apps", "uninstall_app", "pair_youtube", "diagnose", "assistant", "standard_diagnose", "quick_setup")),
     vol.Optional("room_id"): str,
     vol.Optional("target_id"): str,
     vol.Optional("favorite_id"): str,
@@ -89,7 +89,7 @@ async def ws_command(hass, connection, msg) -> None:
         current = manager(hass)
         operation = msg["operation"]
         result = None
-        if operation in ("diagnose", "assistant", "standard_diagnose") and not connection.user.is_admin:
+        if operation in ("diagnose", "assistant", "standard_diagnose", "quick_setup") and not connection.user.is_admin:
             raise CinemaError("Die Beta-Diagnose ist Administratoren vorbehalten.", "unauthorized")
         if operation == "standard_diagnose":
             result = await current.standard_diagnose(msg.get("data", {}))
@@ -111,7 +111,10 @@ async def ws_command(hass, connection, msg) -> None:
             room, target = current.resolve(msg["room_id"], msg["target_id"])
             permitted(connection, current.job_entities(room, target), POLICY_CONTROL)
             context = Context(user_id=connection.user.id)
-            if operation == "assistant":
+            if operation == "quick_setup":
+                permitted(connection, current.job_entities(room, target), POLICY_READ)
+                result = await current.quick_assistant(room, target, msg.get("action", ""), msg.get("data", {}), context)
+            elif operation == "assistant":
                 permitted(connection, current.job_entities(room, target), POLICY_READ)
                 result = await current.assistant(room, target, msg.get("app", ""), msg.get("action", ""), msg.get("data", {}), context)
             elif operation == "diagnose":

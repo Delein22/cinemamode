@@ -1,5 +1,5 @@
 /* Local native web component. No build step, CDN, tracking or bundled framework. */
-import {appArtwork} from "./app-catalog.js?v=0.2.29";
+import {appArtwork} from "./app-catalog.js?v=0.2.30";
 
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const id = () => crypto.randomUUID().replaceAll("-", "");
@@ -10,6 +10,8 @@ const assistantOutcomes = {...diagnosticObservations,playing:"Der richtige Titel
 const assistantScenarios = {app_open:{label:"App geöffnet",instruction:"Öffne die App, wähle dein Profil und lass ihre Startseite offen."},app_closed:{label:"App geschlossen",instruction:"Schließe die App und gehe zum Home-Bildschirm des Fernsehers."},profile_selection:{label:"Profilauswahl",instruction:"Öffne die App bis zur Profilauswahl und lass diese Auswahl stehen."}};
 const standardSystems = {samsungtv:"Samsung Tizen",webostv:"LG webOS",androidtv:"Android / Google TV",firetv:"Fire TV",other:"Anderes System"};
 const standardApps = ["Netflix","Apple TV","MagentaTV","RTL+","Plex","YouTube"];
+const quickStates = new Set(["ready","running","connection_required","awaiting_result","awaiting_profile","uncertain","saved","exhausted","cancelled"]);
+const quickOutcomes = {playing:"Richtiger Titel läuft",app_only:"Nur App geöffnet",title_page:"Titelseite sichtbar",wrong_title:"Falscher Titel",profile_selection:"Profilauswahl",failed:"Nichts passiert"};
 const states = {on:"Eingeschaltet", off:"Aus", standby:"Standby", idle:"Bereit", playing:"Wiedergabe gemeldet", paused:"Pause gemeldet", buffering:"Lädt", unknown:"Unbekannt", unavailable:"Nicht erreichbar"};
 const active = (job) => job && ["preparing", "dispatching", "awaiting_profile", "observing"].includes(job.phase);
 const icon = (name) => {
@@ -35,7 +37,7 @@ export class CinemaControlPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({mode:"open"});
-    this.shadowRoot.innerHTML = `<link rel="stylesheet" href="/cinema_control_static/cinema-panel.css?v=0.2.29"><div id="screen"></div><dialog aria-labelledby="dialog-title"><div id="form"></div></dialog><div id="notice" role="status" aria-live="polite"></div>`;
+    this.shadowRoot.innerHTML = `<link rel="stylesheet" href="/cinema_control_static/cinema-panel.css?v=0.2.30"><div id="screen"></div><dialog aria-labelledby="dialog-title"><div id="form"></div></dialog><div id="notice" role="status" aria-live="polite"></div>`;
     this.view = "favorites";
     this.query = "";
     this.filter = "";
@@ -52,9 +54,11 @@ export class CinemaControlPanel extends HTMLElement {
         event.target.closest(".app-logo")?.classList.add("logo-unavailable");
       }
     }, true);
-    this.shadowRoot.querySelector("dialog").addEventListener("close", () => {
+    this.shadowRoot.querySelector("dialog").addEventListener("close", event => {
+      if (event.currentTarget.open) return; // Ignore an earlier close event after another form has reopened the dialog.
       this._cancelImageUpload();
       this._cancelDiagnostic();
+      this._cancelQuickSetup();
       this.returnFocus?.focus();
     });
     try {
@@ -79,7 +83,7 @@ export class CinemaControlPanel extends HTMLElement {
   disconnectedCallback() { this._disconnect(); this._cancelImageUpload(); clearTimeout(this.noticeTimer); }
 
   _disconnect() {
-    if (this.diagnostic) this._closeForm();
+    if (this.diagnostic || this.quickSetup) this._closeForm();
     this.generation = (this.generation || 0) + 1;
     this.unsubscribe?.();
     this.unsubscribe = null;
@@ -347,6 +351,7 @@ export class CinemaControlPanel extends HTMLElement {
     return `<div class="title-row"><div><h1>Einrichtung</h1><p class="muted">Vorhandene HA-Geräte zuordnen und Startverfahren pro App festlegen.</p></div><button data-op="room-new">${icon("plus")} Raum hinzufügen</button></div>
       <section class="settings-section"><div><h2>Räume und Wiedergabeziele</h2><p class="muted">Der Fernseher regelt Ton und Eingang. Jedes Wiedergabeziel erhält eine eigene Fernbedienung und App-Zuordnung.</p><p class="small muted">Für Fire TV wähle das Profil der ADB-Integration. Samsung Tizen erhält nur Funktionen, die seine vorhandene Integration meldet.</p></div><div class="panel">${this.data.rooms.length ? this.data.rooms.map(r=>`<article class="setting-row"><div><h3>${esc(r.name)}</h3><p class="small muted">${esc(this.entity(r.tv_entity_id)?.name || r.tv_entity_id)}</p><p class="small">${r.targets.map(t=>esc(t.name)+(t.entity_id===r.tv_entity_id?" · nativ":" · "+esc(t.hdmi_source))).join("<br>")}</p></div><button data-op="room-edit" data-id="${esc(r.id)}">Bearbeiten</button></article>`).join("") : `<div class="empty"><h3>Noch kein Raum</h3><p>Die Geräteauswahl verwendet ausschließlich Geräte dieser HA-Instanz.</p><button data-op="room-new">Ersten Raum einrichten</button></div>`}</div></section>
       ${this._youtubeSettings()}
+      ${this.data.can_configure ? `<section class="settings-section"><div><h2>Direktstart einrichten</h2><p class="muted">Ein Gerät, ein Favorit und ein geführter Titeltest.</p></div><div class="panel"><p>Die Einrichtung prüft die Geräteverbindung und wählt passende bekannte Startwege. Du bestätigst anschließend, was tatsächlich am Fernseher zu sehen ist.</p><p class="small muted">Ein bestätigter erster Test wird für genau dieses Gerät und diese App gespeichert.</p><button class="primary" data-op="quick-open" ${this.pending ? "disabled" : ""}>Direktstart einrichten</button></div></section>` : ""}
       <section class="settings-section"><div><h2>Direktstart-Assistent</h2><p class="muted">Eine gemeinsame Diagnose für die üblichen TV-Apps.</p></div><div class="panel"><p>TV-Adresse und System auswählen. Der Assistent verbindet den Fernseher und erfasst die Standard-Apps in einem Bericht.</p><p class="small muted">Dabei wird kein Film gestartet. Der Bericht wird nur auf Wunsch heruntergeladen.</p><button data-op="diagnostic-open" ${this.pending ? "disabled" : ""}>Assistent öffnen</button></div></section>
       <section class="settings-section"><div><h2>Verfügbarkeit und Nachweise</h2><p class="muted">Appstart, Titelaufruf und Wiedergabe werden getrennt erfasst.</p></div><div class="panel"><p>Neue App-Zuordnungen sind ungetestet. Trage einen manuellen Nachweis erst ein, wenn du das Ergebnis am Gerät gesehen hast.</p><p class="muted">Ein manueller Nachweis beschreibt die geprüfte Kombination. Beim nächsten Start zeigt der Ablauf weiterhin nur die tatsächlich empfangene Rückmeldung.</p><p class="small muted">Anmeldungen und PINs werden am Fernseher eingegeben. Bei Prime Video kann pro Favorit ein einzelnes Profil-OK aktiviert werden.</p></div></section>`;
   }
@@ -354,16 +359,206 @@ export class CinemaControlPanel extends HTMLElement {
   _openForm(html) {
     this._cancelImageUpload();
     this._cancelDiagnostic();
+    this._cancelQuickSetup();
     if (!this.shadowRoot.querySelector("dialog").open) this.returnFocus = this.shadowRoot.activeElement;
     this.shadowRoot.querySelector("#form").innerHTML = html;
     const dialog = this.shadowRoot.querySelector("dialog");
     if (!dialog.open) dialog.showModal();
     dialog.querySelector("input,select,button")?.focus();
   }
-  _closeForm() { this._cancelImageUpload(); this._cancelDiagnostic(); this.shadowRoot.querySelector("dialog").close(); }
+  _closeForm() { this._cancelImageUpload(); this._cancelDiagnostic(); this._cancelQuickSetup(); this.shadowRoot.querySelector("dialog").close(); }
   _formHeader(title) { return `<div class="section-head"><h2 id="dialog-title">${title}</h2><button type="button" class="icon" data-op="dialog-close" aria-label="Schließen">${icon("close")}</button></div><p id="form-error" role="alert"></p>`; }
 
   _cancelDiagnostic() { this.diagnostic = null; }
+
+  _quickTargets() {
+    return (this.data?.rooms || []).flatMap(room => room.targets.filter(target => target.can_control).map(target => ({room,target})));
+  }
+
+  _quickSetupForm() {
+    if (!this.data?.can_configure || this.pending) return;
+    const choices = this._quickTargets();
+    const choice = choices.find(item => item.room.id === this.roomId && item.target.id === this.targetId) || choices[0];
+    this._openForm("");
+    this.quickSetup = {roomId:choice?.room.id || "",targetId:choice?.target.id || "",favoriteId:this.data.favorites[0]?.id || "",pending:false,changing:false,result:null,error:"",hass:this._hass,cancelIds:new Set(),cancelPromises:new Map()};
+    this._renderQuickSetupForm();
+    this.shadowRoot.querySelector('#quick-target, [data-op="room-new"], [data-op="favorite-new"]')?.focus();
+  }
+
+  async _cancelQuickSession(state, sessionId = state?.pendingSessionId || state?.result?.session?.id) {
+    if (!state || !sessionId) return true;
+    if (typeof sessionId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return false;
+    if (state.cancelIds.has(sessionId)) return true;
+    if (state.cancelPromises.has(sessionId)) return state.cancelPromises.get(sessionId);
+    const cancel = (async() => {
+      try {
+        const result = await state.hass.callWS({type:"cinema_control/command",operation:"quick_setup",room_id:state.roomId,target_id:state.targetId,action:"cancel",data:{session_id:sessionId}});
+        if (result?.session && result.session.id !== sessionId) return false;
+        state.cancelIds.add(sessionId);
+        return true;
+      } catch { return false; /* A late response can retry cancellation for this exact session. */ }
+    })();
+    state.cancelPromises.set(sessionId,cancel);
+    void cancel.then(()=>state.cancelPromises.delete(sessionId));
+    return cancel;
+  }
+
+  _cancelQuickSetup() {
+    const state = this.quickSetup;
+    if (!state) return;
+    this.quickSetup = null;
+    state.closed = true;
+    if (state.pendingSessionId || !['saved','exhausted','cancelled'].includes(state.result?.session?.state)) void this._cancelQuickSession(state);
+  }
+
+  _validQuickReport(report) {
+    if (!this._validDiagnosticReport(report) || !["passive","standard"].includes(report.mode)) return false;
+    let remaining = 16384;
+    const privateKeys = new Set(["host","ip","ip_address","address","mac","mac_address","token","access_token","refresh_token","pairing_token","password","secret","cookie","headers","authorization_header","api_key","private_key","serial","unique_id","entity_id","room_id","target_id","favorite_id","profile_name","raw","raw_preview","launcher_key","start_id","deeplinkId","session_id","binding_signature"].map(key=>key.toLowerCase()));
+    const safe = (value, depth = 0) => {
+      if (--remaining < 0 || depth > 25) return false;
+      if (Array.isArray(value)) return value.every(item => safe(item,depth+1));
+      if (value && typeof value === "object") return Object.entries(value).every(([key,item]) => !privateKeys.has(key.toLowerCase()) && (key.toLowerCase() !== "authorization" || ["verified","failed","not_checked"].includes(item)) && safe(item,depth+1));
+      return true;
+    };
+    return safe(report);
+  }
+
+  _validQuickResult(result, state, expectedId = "") {
+    if (!result || typeof result !== "object" || Array.isArray(result) || new Blob([JSON.stringify(result)]).size > 500 * 1024) return false;
+    const session = result.session;
+    if (session == null) return !expectedId;
+    return Boolean(typeof session === "object" && !Array.isArray(session) && typeof session.id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(session.id) && quickStates.has(session.state)
+      && (!expectedId || session.id === expectedId)
+      && (session.favorite_id == null || session.favorite_id === state.favoriteId)
+      && (session.room_id == null || session.room_id === state.roomId)
+      && (session.target_id == null || session.target_id === state.targetId));
+  }
+
+  _renderQuickSetupForm() {
+    const state = this.quickSetup;
+    if (!state) return;
+    const choices = this._quickTargets(), favorites = this.data.favorites;
+    const session = state.result?.session, phase = session?.state || "idle";
+    const busy = state.pending || state.changing || this.pending;
+    const terminal = ["saved","exhausted","cancelled"].includes(phase);
+    const canBegin = !session || terminal;
+    const canRecord = ["awaiting_result","uncertain"].includes(phase) && session?.can_record !== false;
+    const canNext = phase === "ready" && session?.can_next !== false;
+    const favorite = favorites.find(item=>item.id === state.favoriteId);
+    const hasChoice = choices.some(item=>item.room.id === state.roomId && item.target.id === state.targetId);
+    const titles = {idle:"Bereit für den ersten Test",ready:"Ein weiterer Startweg ist verfügbar",running:"Gerät und Startweg werden geprüft",connection_required:"Verbindung am Fernseher bestätigen",awaiting_result:"Was zeigt der Fernseher?",awaiting_profile:"Profil am Fernseher auswählen",uncertain:"Ergebnis des Aufrufs ist noch offen",saved:"Erster Titeltest bestätigt",exhausted:"Kein bestätigter Startweg gefunden",cancelled:"Test beendet"};
+    const attempts = Array.isArray(session?.attempts) ? session.attempts.slice(0,3) : [];
+    const attemptStates = {running:"Test läuft",sent:"Befehl gesendet",command_sent:"Befehl gesendet",accepted:"Befehl angenommen",awaiting_result:"Ergebnis offen",failed:"Nicht abgeschlossen",blocked:"Nicht verfügbar",playing:"Wiedergabe von dir bestätigt",recorded:"Ergebnis festgehalten",uncertain:"Ergebnis offen"};
+    this.shadowRoot.querySelector("#form").innerHTML = `${this._formHeader("Direktstart einrichten")}
+      <div class="quick-setup" aria-busy="${busy}">
+        <p class="muted">Lass den Fernseher eingeschaltet. Wähle ein Wiedergabegerät und einen Favoriten; die App wird aus dem Favoriten übernommen.</p>
+        ${!choices.length ? `<div class="empty"><p>Ordne zuerst einen Fernseher oder Zuspieler einem Raum zu.</p><button data-op="room-new">Raum einrichten</button></div>` : !favorites.length ? `<div class="empty"><p>Speichere zuerst einen Favoriten mit dem gewünschten Inhaltslink.</p><button data-op="favorite-new">Favorit hinzufügen</button></div>` : `
+        <div class="form-grid quick-choice"><label>Wiedergabegerät<select id="quick-target" ${busy ? "disabled" : ""}>${choices.map((item,index)=>`<option value="${index}" ${item.room.id===state.roomId && item.target.id===state.targetId ? "selected" : ""}>${esc(item.room.name)} · ${esc(this.entity(item.target.entity_id)?.name || item.target.name)}</option>`).join("")}</select></label>
+        <label>Testfavorit<select id="quick-favorite" ${busy ? "disabled" : ""}>${favorites.map(item=>`<option value="${esc(item.id)}" ${item.id===state.favoriteId ? "selected" : ""}>${esc(item.name)} · ${esc(labels[item.provider] || item.provider)}</option>`).join("")}</select></label></div>
+        <section class="quick-progress ${phase === "saved" ? "quick-confirmed" : ""}" aria-labelledby="quick-state-title">
+          <p class="section-kicker">Verbindung → Startweg → Titeltest</p><h3 id="quick-state-title" tabindex="-1">${esc(titles[phase] || "Titeltest")}</h3>
+          <p id="quick-message" role="status" aria-live="polite">${esc(busy ? state.changing ? "Bisherigen Test beenden …" : "Bitte warten. Bestätige eine Freigabe am Fernseher, falls sie erscheint." : session?.message || "Der Test öffnet die App und fordert den ausgewählten Titel am Fernseher an.")}</p>
+          ${favorite ? `<p class="small muted">Gewählter Titel: ${esc(favorite.name)}</p>` : ""}
+          ${phase === "awaiting_result" || phase === "uncertain" ? `<p class="small muted">Ein angenommener Befehl bestätigt noch keine Wiedergabe. Bestätige nur, was du am Bildschirm tatsächlich siehst.</p>` : ""}
+          ${phase === "awaiting_profile" ? `<p>Wähle dein gewünschtes Profil am TV. Eine Profil-PIN gibst du dort ein. Bestätige anschließend hier die Auswahl.</p>` : ""}
+          ${phase === "connection_required" ? `<p>Mit „TV neu verbinden“ wird eine Gerätefreigabe angefragt. Bestätige gegebenenfalls „Zulassen“ am Fernseher.</p>` : ""}
+          ${phase === "saved" ? `<p class="small">Ein Titel in einer Ausgangssituation wurde bestätigt. Dieser Startweg wird lokal für dieses Gerät und diese App verwendet.</p>` : ""}
+          ${phase === "exhausted" ? `<p class="small">Der Bericht enthält die erkannten Voraussetzungen und den Verlauf. Er kann helfen, einen weiteren Startweg zu ergänzen.</p>` : ""}
+        </section>
+        ${canBegin ? `<button class="primary" data-op="quick-begin" ${busy || !hasChoice || !favorite ? "disabled" : ""}>TV prüfen und Titel testen</button>` : ""}
+        ${phase === "connection_required" ? `<button class="primary" data-op="quick-connect" ${busy ? "disabled" : ""}>TV neu verbinden</button>` : ""}
+        ${phase === "awaiting_profile" ? `<button class="primary" data-op="quick-continue-profile" ${busy ? "disabled" : ""}>Profil ist ausgewählt</button>` : ""}
+        ${canNext ? `<button class="primary" data-op="quick-next" ${busy ? "disabled" : ""}>Nächsten passenden Weg testen</button>` : ""}
+        ${phase === "running" && !busy ? `<button data-op="quick-status">Status aktualisieren</button>` : ""}
+        ${canRecord ? `<div class="quick-outcomes" role="group" aria-label="Ergebnis am Fernseher">${Object.entries(quickOutcomes).map(([value,label])=>`<button ${value === "playing" ? 'class="primary"' : ""} data-op="quick-record" data-outcome="${value}" ${busy ? "disabled" : ""}>${label}</button>`).join("")}</div>` : ""}
+        ${attempts.length ? `<details class="advanced-settings"><summary>Bisherige Startversuche</summary><ol class="quick-attempts">${attempts.map(attempt=>`<li><strong>${esc(attempt.label || "Startweg")}</strong><span>${esc(quickOutcomes[attempt.outcome] || attemptStates[attempt.state] || "Testschritt erfasst")}</span>${typeof attempt.error_code === "string" && /^[a-z0-9_]{1,80}$/.test(attempt.error_code) ? `<span class="small muted">${esc(attempt.error_code)}</span>` : ""}</li>`).join("")}</ol></details>` : ""}`}
+        <p id="quick-error" role="alert" class="negative">${esc(state.error)}</p>
+        <footer class="form-actions">${state.result?.report ? `<button data-op="quick-download" ${busy ? "disabled" : ""}>Bericht herunterladen</button>` : ""}${session && !terminal ? `<button class="danger" data-op="quick-cancel" ${busy ? "disabled" : ""}>Test beenden</button>` : ""}<span></span><button data-op="dialog-close">${busy ? "Beenden und schließen" : "Schließen"}</button></footer>
+      </div>`;
+  }
+
+  async _quickChanged(element) {
+    const state = this.quickSetup;
+    if (!state || state.pending || state.changing || this.pending) { this._renderQuickSetupForm(); return; }
+    let roomId = state.roomId, targetId = state.targetId, favoriteId = state.favoriteId;
+    if (element.id === "quick-target") {
+      const choice = this._quickTargets()[Number(element.value)];
+      if (!choice) return;
+      roomId = choice.room.id; targetId = choice.target.id;
+    } else if (element.id === "quick-favorite" && this.data.favorites.some(item=>item.id===element.value)) favoriteId = element.value;
+    else return;
+    if (roomId === state.roomId && targetId === state.targetId && favoriteId === state.favoriteId) return;
+    state.changing = true;
+    this._renderQuickSetupForm();
+    const cancelled = ['saved','exhausted','cancelled'].includes(state.result?.session?.state) || await this._cancelQuickSession(state);
+    if (this.quickSetup !== state) return;
+    if (!cancelled) {
+      state.changing = false;
+      state.error = "Der bisherige Test konnte noch nicht beendet werden. Bitte erneut versuchen.";
+      this._renderQuickSetupForm();
+      return;
+    }
+    Object.assign(state,{roomId,targetId,favoriteId,result:null,error:"",changing:false});
+    this._renderQuickSetupForm();
+    this.shadowRoot.getElementById(element.id)?.focus();
+  }
+
+  async _quickAction(action, outcome = "") {
+    const state = this.quickSetup;
+    if (!state || state.pending || state.changing || this.pending || !this.data?.can_configure || state.hass !== this._hass) return;
+    const session = state.result?.session;
+    let data = {};
+    if (action === "begin") {
+      if (session && !['saved','exhausted','cancelled'].includes(session.state)) return;
+      if (!this.data.favorites.some(item=>item.id===state.favoriteId) || !this._quickTargets().some(item=>item.room.id===state.roomId && item.target.id===state.targetId)) return;
+      state.pendingSessionId = id();
+      data = {favorite_id:state.favoriteId,session_id:state.pendingSessionId};
+    } else if (action === "status") data = {};
+    else {
+      if (!session?.id) return;
+      data = {session_id:session.id};
+      if (action === "record") {
+        if (!Object.hasOwn(quickOutcomes,outcome) || !["awaiting_result","uncertain"].includes(session.state) || session.can_record === false) return;
+        data.outcome = outcome;
+      } else if (action === "connect" && session.state !== "connection_required") return;
+      else if (action === "next" && (session.state !== "ready" || session.can_next === false)) return;
+      else if (action === "continue_profile" && session.state !== "awaiting_profile") return;
+      else if (!["connect","next","continue_profile","cancel"].includes(action)) return;
+    }
+    const expectedId = action === "begin" ? state.pendingSessionId : session?.id || "";
+    state.pending = true; state.error = "";
+    this._renderQuickSetupForm();
+    try {
+      const result = await this._command("quick_setup",{room_id:state.roomId,target_id:state.targetId,action,data});
+      if (!this._validQuickResult(result,state,expectedId)) throw new Error("Der Einrichtungsassistent hat keine passende Antwort geliefert. Bitte erneut versuchen.");
+      if (this.quickSetup !== state) {
+        if (!['saved','exhausted','cancelled'].includes(result.session?.state)) void this._cancelQuickSession(state,result.session?.id);
+        return;
+      }
+      state.result = {...result,report:this._validQuickReport(result.report) ? result.report : null};
+    } catch (error) {
+      if (action === "begin") void this._cancelQuickSession(state,expectedId);
+      if (this.quickSetup === state) state.error = typeof error?.message === "string" ? error.message.slice(0,300) : "Die Einrichtung konnte nicht abgeschlossen werden.";
+    } finally {
+      state.pending = false;
+      state.pendingSessionId = "";
+      if (this.quickSetup === state) {
+        this._renderQuickSetupForm();
+        this.shadowRoot.getElementById("quick-state-title")?.focus();
+      }
+    }
+  }
+
+  _downloadQuickReport() {
+    const report = this.quickSetup?.result?.report;
+    if (!this._validQuickReport(report)) return;
+    const file = new Blob([JSON.stringify(report,null,2) + "\n"],{type:"application/json;charset=utf-8"});
+    const url = URL.createObjectURL(file), link = document.createElement("a");
+    link.href = url; link.download = "kinosteuerung-einrichtung-diagnose.json"; link.hidden = true;
+    this.shadowRoot.append(link); link.click(); link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }
 
   _diagnosticApps(room, target) {
     const sources = this.entity(target?.entity_id)?.sources;
@@ -418,20 +613,30 @@ export class CinemaControlPanel extends HTMLElement {
       invalid_response:"Die Antwort des Fernsehers konnte nicht ausgewertet werden.",
       response_limit:"Die Antwort des Fernsehers war für diese Abfrage zu umfangreich.",
       pairing_not_completed:"Die Kopplung wurde nicht abgeschlossen.",
+      existing_pairing_required:"Für diese Abfrage fehlen gespeicherte Kopplungsdaten.",
+      invalid_device_access:"Die gespeicherte Geräteverbindung passt nicht zum gewählten Fernseher.",
+      channel_error:"Die Fernsteuerungs-Verbindung wurde mit einem Fehler beendet.",
+      server_error:"Der Fernseher hat einen Protokollfehler gemeldet.",
+      response_timeout:"Die angemeldete Verbindung hat die benötigten Gerätedaten nicht rechtzeitig geliefert.",
+      event_limit:"Der Fernseher hat innerhalb der begrenzten Abfrage keine vollständige Antwort geliefert.",
+      redirect_rejected:"Die Geräteverbindung wurde umgeleitet; die Umleitung wurde nicht verwendet.",
     };
-    const phases = {connect:"Verbindungsaufbau",tls:"Verschlüsselung",websocket_handshake:"Start der Fernsteuerung",authorization:"Freigabe",response:"Antwort"};
+    const phases = {connect:"Verbindungsaufbau",tls:"Verschlüsselung",websocket_handshake:"Start der Fernsteuerung",authorization:"Freigabe",response:"Antwort",responses:"Gerätedaten",app_list:"App-Liste",preview:"Smart-Hub-Vorschau",complete:"Abfrage abgeschlossen"};
     const details = value => [
       Number.isInteger(value.port) && value.port > 0 && value.port <= 65535 ? `Port ${value.port}` : "",
       phases[value.phase] || "",
       Number.isInteger(value.http_status) && value.http_status >= 100 && value.http_status <= 599 ? `HTTP ${value.http_status}` : "",
-      Number.isInteger(value.close_code) && value.close_code >= 0 && value.close_code <= 4999 ? `Close-Code ${value.close_code}` : "",
+      Number.isInteger(value.close_code) && value.close_code >= 0 && value.close_code <= 65535 ? `Close-Code ${value.close_code}` : "",
     ].filter(Boolean).join(" · ");
     const technical = details(connection);
     const attempts = Array.isArray(connection.attempts) ? connection.attempts.slice(0,2).filter(item=>item && typeof item === "object").map(item=>[details(item),reasons[item.reason] || ""].filter(Boolean).join(" · ")).filter(Boolean) : [];
     const pairing = connection.pairing;
-    const title = {unavailable:"Fernsteuerungs-Verbindung fehlt",paired:"Fernsteuerung verbunden",existing:"Vorhandene Fernsteuerungs-Freigabe verwendet",not_required:"Keine Samsung-Kopplung angefragt"}[pairing] || "Fernsteuerungs-Verbindung nicht geprüft";
-    return `<div class="diagnostic-connection" role="group" aria-label="Verbindungsstatus">${reachable ? `<p class="small">Gerät erreichbar.</p>` : ""}<p><strong ${pairing === "unavailable" ? 'class="negative"' : ""}>${title}</strong></p>
-      ${pairing === "unavailable" ? `<p class="small">Apps und Vorschau konnten über diese Verbindung nicht geprüft werden.</p><p class="small">${reasons[connection.reason] || "Die Freigabe ist nicht bestätigt. Weitere Hinweise stehen im Bericht."}</p>` : pairing === "existing" ? `<p class="small muted">Für diese Diagnose wurde eine bestehende Kopplung verwendet.</p>` : ""}
+    const authorization = connection.authorization;
+    const failed = authorization === "failed" || (authorization !== "verified" && pairing === "unavailable");
+    const title = authorization === "verified" ? "Fernsteuerungs-Zugriff bestätigt" : authorization === "failed" ? "Gespeicherte Freigabe nicht bestätigt" : ({unavailable:"Fernsteuerungs-Verbindung fehlt",paired:"Neue Kopplungsdaten gespeichert",existing:"Vorhandene Kopplungsdaten verwendet",not_required:"Keine Samsung-Kopplung angefragt"}[pairing] || "Fernsteuerungs-Verbindung nicht geprüft");
+    const partial = authorization === "verified" && Array.isArray(report?.checks) && report.checks.some(check=>["smart_hub_preview","standard_app_listing"].includes(check?.id) && check.status === "unavailable");
+    return `<div class="diagnostic-connection" role="group" aria-label="Verbindungsstatus">${reachable ? `<p class="small">Gerät erreichbar.</p>` : ""}<p><strong ${failed ? 'class="negative"' : ""}>${title}</strong></p>
+      ${failed ? `<p class="small">Der Zugriff für die Geräteabfrage ist nicht bestätigt.</p><p class="small">${reasons[connection.reason] || "Weitere Hinweise stehen im Bericht."}</p>` : authorization === "verified" ? `<p class="small muted">${partial ? "Die Freigabe wurde bestätigt. Ein Teil der App- oder Vorschaudaten fehlt noch." : "Die gespeicherte Freigabe wurde bei dieser Abfrage vom Fernseher akzeptiert."}</p>` : ["existing","paired"].includes(pairing) ? `<p class="small muted">Gespeicherte Kopplungsdaten allein bestätigen noch keinen erfolgreichen Gerätezugriff.</p>` : ""}
       ${technical || attempts.length ? `<details class="advanced-settings"><summary>Technische Details</summary>${technical ? `<p class="small muted">${esc(technical)}</p>` : ""}${attempts.map((attempt,index)=>`<p class="small muted">Versuch ${index+1}: ${esc(attempt)}</p>`).join("")}</details>` : ""}</div>`;
   }
 
@@ -1063,6 +1268,12 @@ export class CinemaControlPanel extends HTMLElement {
       else if (op === "view") { this.view = button.dataset.view; this._render(); }
       else if (op === "reload") { this._disconnect(); await this._connect(); }
       else if (op === "pair-youtube") await this._pairYoutube();
+      else if (op === "quick-open") this._quickSetupForm();
+      else if (op === "quick-download") this._downloadQuickReport();
+      else if (op.startsWith("quick-")) {
+        const action = {"quick-begin":"begin","quick-connect":"connect","quick-next":"next","quick-record":"record","quick-continue-profile":"continue_profile","quick-cancel":"cancel","quick-status":"status"}[op];
+        if (action) await this._quickAction(action,button.dataset.outcome || "");
+      }
       else if (op === "diagnostic-open") this._diagnosticForm();
       else if (op === "standard-collect") await this._collectStandardDiagnostic();
       else if (op === "diagnostic-collect") await this._collectDiagnostic();
@@ -1091,7 +1302,7 @@ export class CinemaControlPanel extends HTMLElement {
       else if (op === "favorite-edit") this._favoriteForm(this.data.favorites.find(f=>f.id===button.dataset.id));
       else if (op === "room-new") this._roomForm();
       else if (op === "room-edit") this._roomForm(this.data.rooms.find(r=>r.id===button.dataset.id));
-      else if (op === "dialog-close") { if (!this.pending || this.diagnostic) this._closeForm(); }
+      else if (op === "dialog-close") { if (!this.pending || this.diagnostic || this.quickSetup) this._closeForm(); }
       else if (op === "target-add") {
         this.roomDraft = this._collectRoom();
         if (this.roomDraft.targets.length >= 12) throw new Error("Maximal zwölf Wiedergabeziele pro Raum.");
@@ -1135,6 +1346,7 @@ export class CinemaControlPanel extends HTMLElement {
 
   _change(event) {
     const el = event.target;
+    if (["quick-target","quick-favorite"].includes(el.id)) { void this._quickChanged(el); return; }
     if (el.id === "standard-system") {
       const state = this.diagnostic;
       if (state && !state.pending && Object.hasOwn(standardSystems,el.value)) {

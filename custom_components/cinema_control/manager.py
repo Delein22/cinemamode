@@ -23,9 +23,10 @@ from homeassistant.helpers.storage import Store
 from .const import (DOMAIN, FEEDBACK_TIMEOUT, OFF_STATES, PROFILE_TIMEOUT, PROVIDERS, READY_STATES,
                     SAMSUNG_PLEX_APP_ID, SERVICE_TIMEOUT, SOURCE_TIMEOUT, STORAGE_VERSION, WAKE_TIMEOUT)
 from .main_ha import BridgeError, MainHAClient
-from .models import CinemaError, content_url, favorite_record, room_record
+from .models import CinemaError, content_url, entity_id, favorite_record, room_record
 from .device_access import DeviceAccess
 from .start_assistant import StartAssistant
+from .quick_setup import QuickSetup
 from .plex import PROFILE_FILE as PLEX_PROFILE_FILE, PlexLauncher
 from .samsung_disney import PLAY_DELAY, PROFILE_FILE, SamsungDisneyLauncher, disney_title_id
 from .samsung_netflix import SamsungNetflixLauncher
@@ -37,32 +38,35 @@ from .samsung_youtube import (
 
 
 class _StandardDiagnosticAccess:
-    """Resolve an existing local Samsung pairing for this exact submitted address."""
+    """Use the exact selected entity and its normal room binding, never the first token by IP."""
 
     def __init__(self, manager, host):
         self.manager, self.host = manager, host
 
     def resolve(self, context, room, target):
-        from .device_access import AccessSource, TVAccess
-        entries = getattr(self.manager.hass, "config_entries", None)
-        if entries is not None:
-            for entry in entries.async_entries("samsungtv"):
-                if (entry.data.get("method") == "websocket" and entry.data.get("host") == str(self.host)
-                        and (pairing := samsung_youtube_pairing(entry.data))):
-                    return TVAccess(self.host, pairing, SAMSUNG_DEFAULT_CLIENT_NAME, AccessSource.NATIVE)
-        return self.manager.device_access.resolve(context, room, target)
+        owner, selected_room, selected_target = self.scope(context, room, target)
+        access = self.manager.device_access.resolve(owner, selected_room, selected_target)
+        return access if access is None or access.host == self.host else None
+
+    def scope(self, context, room, target):
+        for configured_room in self.manager.config["rooms"]:
+            for configured_target in configured_room["targets"]:
+                if configured_target["entity_id"] == target["entity_id"]:
+                    return self.manager, configured_room, configured_target
+        return context, room, target
 
     def public_binding(self, room, target, app=""):
-        return self.manager.device_access.public_binding(room, target, app)
+        _, selected_room, selected_target = self.scope(None, room, target)
+        return self.manager.device_access.public_binding(selected_room, selected_target, app)
 
 
 class _StandardDiagnosticContext:
     """A private endpoint identity, not a newly created Home Assistant entity."""
 
-    def __init__(self, manager, host, system):
+    def __init__(self, manager, host, system, selected_entity=None):
         self.manager, self.hass, self.host, self.system = manager, manager.hass, host, system
-        key = sha256(f"{host}|{system}".encode()).hexdigest()[:20]
-        self.room = {"id":"standard_" + key, "tv_entity_id":"media_player.cinema_diagnostic_" + key}
+        key = sha256(f"{host}|{system}|{selected_entity or ''}".encode()).hexdigest()[:20]
+        self.room = {"id":"standard_" + key, "tv_entity_id":selected_entity or "media_player.cinema_diagnostic_" + key}
         self.target = {"id":"endpoint", "entity_id":self.room["tv_entity_id"], "profile":system, "apps":{}}
         self.room["targets"] = [self.target]
         self.device_access = _StandardDiagnosticAccess(manager, host)
@@ -128,11 +132,13 @@ class CinemaManager:
         self.plex_launcher: PlexLauncher | None = None
         self.device_access = DeviceAccess(hass)
         self.start_assistant = StartAssistant(hass)
+        self.quick_setup = QuickSetup(self)
         self._standard_reports: dict[str, dict] = {}
 
     async def async_load(self) -> None:
         await self.device_access.async_load()
         await self.start_assistant.async_load()
+        await self.quick_setup.async_load()
         if self._unsub:
             self._unsub()
         saved = await self.store.async_load()
@@ -172,6 +178,7 @@ class CinemaManager:
                 entry = registry.async_get(target["entity_id"])
                 if entry and entry.device_id == device_id:
                     self.start_assistant.invalidate(room, target)
+                    self.quick_setup.invalidate(room, target)
         self.notify()
 
     @callback
@@ -187,6 +194,7 @@ class CinemaManager:
     async def async_close(self) -> None:
         self.closed = True
         self.start_assistant.close()
+        self.quick_setup.close()
         if self._unsub:
             self._unsub()
             self._unsub = None
@@ -252,7 +260,16 @@ class CinemaManager:
                 return self.start_assistant.get_report(room, target, app)
 
     def _assistant_identity(self, room: dict, target: dict, app: str) -> dict:
-        report = self.start_assistant.get_report(room, target, app)
+        reports = [value for value in (self.start_assistant.get_report(room, target, app),
+                                       self.quick_setup.get_report(room, target, app)) if value is not None]
+
+        def captured_time(value):
+            try:
+                return datetime.fromisoformat(value.get("created_at", "")).timestamp()
+            except (ValueError, TypeError, OverflowError):
+                return 0
+
+        report = max(reports, key=captured_time) if reports else None
         if report is None:
             raise CinemaError("Bitte zuerst einen aktuellen Diagnosebericht erstellen.", "diagnostic_required")
         if report.get("identity_match") is False:
@@ -264,19 +281,23 @@ class CinemaManager:
         from .device_access import _host
         from .standard_diagnostics import (async_collect_standard_diagnostics, diff_standard_reports,
                                            normalize_system, validate_extra_app)
-        if (not isinstance(data, dict) or set(data) - {"host","system","extra_app"}
+        if (not isinstance(data, dict) or set(data) - {"host","system","extra_app","entity_id"}
                 or self.closed):
             raise CinemaError("Bitte TV-Adresse und Gerätesystem angeben.", "invalid_standard_diagnostic")
         host = _host(data.get("host"))
         system = normalize_system(data.get("system"))
         extra_app = validate_extra_app(data.get("extra_app", ""))
+        selected_entity = self._standard_diagnostic_entity(host, data.get("entity_id")) if system == "samsungtv" else None
         if self._diagnostic_lock.locked() or self._control_lock.locked():
             raise CinemaError("Eine Diagnose oder Geräteaktion läuft bereits. Bitte kurz warten.", "busy")
-        context = _StandardDiagnosticContext(self, host, system)
+        context = _StandardDiagnosticContext(self, host, system, selected_entity)
         cache_key = context.room["id"]
         async with self._diagnostic_lock:
             async with asyncio.timeout(75):
-                await self.device_access.async_bind(context.room, context.target, str(host))
+                pairing_owner, pairing_room, pairing_target = context.device_access.scope(context, context.room, context.target)
+                saved_binding = self.device_access._binding(pairing_room, pairing_target)
+                if saved_binding is None or saved_binding["host"] != str(host):
+                    await self.device_access.async_bind(pairing_room, pairing_target, str(host))
                 access = context.device_access.resolve(context, context.room, context.target)
                 pairing_status = "not_required"
                 pairing_details = {}
@@ -285,7 +306,7 @@ class CinemaManager:
                         pairing_status = "existing"
                     else:
                         try:
-                            await self.device_access.async_pair(context, context.room, context.target)
+                            await self.device_access.async_pair(pairing_owner, pairing_room, pairing_target)
                             pairing_status = "paired"
                         except SamsungPairingError as error:
                             pairing_status = "unavailable"
@@ -298,7 +319,7 @@ class CinemaManager:
                             pairing_status = "unavailable"
                             pairing_details = {"port":8002,"phase":"authorization","reason":"pairing_not_completed"}
                 report = await async_collect_standard_diagnostics(context, context.room, context.target, system, extra_app)
-                report["connection"] = {"pairing":pairing_status, **pairing_details}
+                report["connection"] = {**report.get("connection", {}), "pairing":pairing_status, **pairing_details}
                 if pairing_status == "unavailable" and "pairing_unavailable" not in report["limitations"]:
                     report["limitations"].append("pairing_unavailable")
                 report["diff"] = diff_standard_reports(self._standard_reports.get(cache_key), report)
@@ -307,14 +328,69 @@ class CinemaManager:
                 self._standard_reports[cache_key] = deepcopy(report)
                 return report
 
+    def _standard_diagnostic_entity(self, host, requested=None) -> str | None:
+        registry = er.async_get(self.hass)
+
+        def eligible(player):
+            registered = registry.async_get(player)
+            if not registered or getattr(registered, "disabled_by", None) or not registered.config_entry_id:
+                return False
+            entry = self.hass.config_entries.async_get_entry(registered.config_entry_id)
+            state = getattr(entry, "state", None)
+            return bool(entry and entry.domain == "samsungtv" and entry.data.get("host") == str(host)
+                        and getattr(state, "value", state) == "loaded")
+
+        if requested is not None:
+            player = entity_id(requested)
+            if not eligible(player):
+                raise CinemaError("Das ausgewählte Samsung-Gerät ist für diese Adresse nicht geladen.", "invalid_diagnostic_entity")
+            return player
+        candidates = [state.entity_id for state in self.hass.states.async_all()
+                      if state.domain == "media_player" and eligible(state.entity_id)]
+        if len(candidates) > 1:
+            raise CinemaError("Mehrere Samsung-Geräte verwenden diese Adresse. Wähle unter Direktstart einrichten das konkrete Gerät.",
+                              "ambiguous_diagnostic_entity")
+        return candidates[0] if candidates else None
+
+    async def async_quick_pair(self, room: dict, target: dict, force: bool = False) -> None:
+        if self.closed or self.tasks.get(room["id"]) or self._control_lock.locked() or self._diagnostic_lock.locked():
+            raise CinemaError("Eine Geräteaktion läuft. Bitte kurz warten.", "busy")
+        if self.platform(target["entity_id"]) != "samsungtv":
+            return
+        binding = self.device_access.public_binding(room, target)
+        if not binding.get("host"):
+            raise CinemaError("Für diesen TV fehlt die Adresse. Hinterlege sie unter Diagnose → Verbindung zum Fernseher.", "device_access_missing")
+        saved_binding = self.device_access._binding(room, target)
+        if saved_binding is None or saved_binding["host"] != binding["host"]:
+            await self.device_access.async_bind(room, target, binding["host"])
+        await self.device_access.async_pair(self, room, target, force=force)
+        self.start_assistant.invalidate(room, target)
+
+    async def quick_assistant(self, room, target, action, data, context):
+        return await self.quick_setup.async_action(room, target, action, data, context)
+
     def _assistant_profile(self, room: dict, target: dict, app: str) -> dict | None:
         try:
             identity = self._assistant_identity(room, target, app)
-            profile = self.start_assistant.matching_profile(room, target, app, identity)
+            profile = self._selected_start_profile(room, target, app, identity)
             # Existing routes already go through their established preparation and confirmations.
             return profile if profile and profile["adapter_id"] != "existing" else None
         except CinemaError:
             return None
+
+    def _selected_start_profile(self, room, target, app, identity):
+        profiles = [profile for profile in (
+            self.start_assistant.matching_profile(room, target, app, identity),
+            self.quick_setup.matching_profile(room, target, app, identity),
+        ) if profile is not None]
+
+        def confirmed_time(profile):
+            try:
+                return datetime.fromisoformat(profile.get("confirmed_at", "")).timestamp()
+            except (ValueError, TypeError, OverflowError):
+                return 0
+
+        return max(profiles, key=confirmed_time) if profiles else None
 
     def _assistant_status(self, room: dict, target: dict, app: str) -> dict:
         from .launch_adapters import adapter_options
@@ -1103,6 +1179,7 @@ class CinemaManager:
             raise
         except CinemaError as err:
             job["result"] = "failed"
+            job["error_code"] = err.code
             self._stage(job, "failed", str(err))
         except TimeoutError:
             job["result"] = "failed"

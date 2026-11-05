@@ -2,7 +2,7 @@
 
 Benutzerdefinierte Home-Assistant-Integration mit einer eigenen Oberfläche für TV-Steuerung, Streaming-Favoriten und Direktstart-Diagnosen.
 
-**Version 0.2.29 · Beta**
+**Version 0.2.30 · Beta**
 
 ## Installation
 
@@ -37,7 +37,20 @@ Wenn HACS noch einen älteren Commit ohne HACS-Metadaten anbietet, die Repositor
 
 Getestete Entwicklungsumgebung: Home Assistant **2026.10.4**. Ältere Versionen sind nicht geprüft.
 
-## Erste Standarddiagnose
+## Direktstart einrichten
+
+1. Den Fernseher einschalten und einen Favoriten mit dem gewünschten Inhaltslink und Abspielverhalten **Fortsetzen** anlegen.
+2. In **Kinosteuerung → Einrichtung → Direktstart einrichten** das Wiedergabeziel und den Favoriten wählen.
+3. **TV prüfen und Titel testen** starten. Dieser Schritt kann die App und den gewählten Titel am TV öffnen.
+4. Falls die Verbindung nicht bestätigt wird, **TV neu verbinden** wählen und gegebenenfalls **Zulassen** am Fernseher bestätigen. Die neue Kopplung wird privat für dieses Ziel gespeichert; die native Samsung-Integration bleibt unverändert.
+5. Das tatsächliche Ergebnis melden. Bei einer Profilauswahl Profil und PIN am Fernseher erledigen und danach im Assistenten fortfahren.
+6. Erst **Richtiger Titel läuft** speichert einen lokal bestätigten Startweg. Bei einem anderen Ergebnis kann der nächste passende bekannte Weg gezielt getestet werden.
+
+Ein angenommener Befehl oder HTTP-Erfolg bestätigt noch keine Wiedergabe. Der erste Erfolg gilt für **einen Titel und eine Ausgangssituation** auf genau diesem Gerät. Die ausführliche Prüfung mit zwei Titeln und sechs Fällen bleibt zusätzlich verfügbar. Unbekannte Firmware und Apps ohne verfügbaren Startweg können nicht automatisch als kompatibel eingestuft werden.
+
+Bei unklarem Ausgang nach einem gesendeten Befehl startet der Assistent keine weiteren Versuche automatisch. Ein Diagnosebericht lässt sich bei Bedarf herunterladen; Zugangsdaten und rohe Vorschauwerte werden nicht exportiert.
+
+## Standarddiagnose ohne Titelstart
 
 1. Den Fernseher oder Smart-Monitor einschalten.
 2. In **Kinosteuerung → Einrichtung → Diagnose öffnen** die lokale TV-IP und das Gerätesystem auswählen.

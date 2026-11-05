@@ -129,11 +129,21 @@ def _safe_report(value: object) -> dict:
         if remaining < 0 or depth > 20:
             raise CinemaError("Der Diagnosebericht ist zu groß.", "invalid_diagnostic")
         if isinstance(child, dict):
-            return {name: redact(item, name, depth + 1) for name, item in child.items()
-                    if isinstance(name, str) and len(name) <= 80 and name not in _PRIVATE_KEYS}
+            result = {}
+            for name, item in child.items():
+                if not isinstance(name, str) or len(name) > 80:
+                    continue
+                if name == "authorization" and key == "connection" and item in ("verified", "failed", "not_checked"):
+                    result[name] = item
+                elif name not in _PRIVATE_KEYS:
+                    result[name] = redact(item, name, depth + 1)
+            return result
         if isinstance(child, list):
             return [redact(item, key, depth + 1) for item in child]
         if isinstance(child, str):
+            if key == "phase" and child in ("connect", "tls", "websocket_handshake", "authorization",
+                                             "app_list", "preview", "complete", "response", "connection"):
+                return child
             # These exact constant templates contain placeholders, never live IDs.
             if child in _PUBLIC_TEMPLATE_URLS:
                 return child

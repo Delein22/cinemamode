@@ -114,6 +114,11 @@ class DeviceAccess:
                            "version_app": _app_scope(item.get("version_app", "")), "revision": revision}
                 if pairing is not None:
                     binding.update(port=pairing[0], token=pairing[1])
+                prefer_stored = item.get("prefer_stored", False)
+                if type(prefer_stored) is not bool or (prefer_stored and pairing is None):
+                    raise ValueError
+                if prefer_stored:
+                    binding["prefer_stored"] = True
                 key = (room_id, target_id)
                 if key in loaded:
                     raise ValueError
@@ -166,11 +171,15 @@ class DeviceAccess:
                 pairing = samsung_youtube_pairing(current)
                 if pairing is not None:
                     value.update(port=pairing[0], token=pairing[1])
+                    if current.get("prefer_stored") is True:
+                        value["prefer_stored"] = True
             updated = {**self._bindings, (room_id, target_id): value}
             await self._save(updated)
         return self.public_binding(room, target, app)
 
-    async def async_pair(self, manager, room: dict, target: dict) -> dict:
+    async def async_pair(self, manager, room: dict, target: dict, *, force: bool = False) -> dict:
+        if type(force) is not bool:
+            raise CinemaError("Ungültige Geräteverbindung.", "invalid_pairing")
         if manager.platform(target["entity_id"]) != "samsungtv":
             raise CinemaError("Die direkte Kopplung ist derzeit für Samsung verfügbar.", "device_access_unsupported")
         if self._pair_lock.locked():
@@ -184,7 +193,7 @@ class DeviceAccess:
             native = self._native(target)
             if native is not None and native.host != address:
                 raise CinemaError("Die gespeicherte Adresse passt nicht mehr zum gewählten Gerät.", "device_access_mismatch")
-            if native is not None and native.pairing is not None:
+            if not force and native is not None and native.pairing is not None:
                 return self.public_binding(room, target)
             port, token = await async_pair_samsung_youtube(address)
             pairing = samsung_youtube_pairing({"port": port, "token": token})
@@ -197,14 +206,22 @@ class DeviceAccess:
                 if _scope(current_room, current_target) != _scope(room, target):
                     raise CinemaError("Das gewählte Gerät wurde inzwischen geändert.", "device_access_changed")
                 updated = {**snapshot, "port": pairing[0], "token": pairing[1], "revision": uuid4().hex}
+                if force:
+                    updated["prefer_stored"] = True
                 await self._save({**self._bindings, (room["id"], target["id"]): updated})
             return self.public_binding(room, target)
 
     def resolve(self, manager, room: dict, target: dict) -> TVAccess | None:
         native = self._native(target)
+        binding = self._binding(room, target)
+        if binding is not None and binding.get("prefer_stored") is True:
+            address = _host(binding["host"])
+            if native is None or native.host == address:
+                pairing = samsung_youtube_pairing(binding)
+                if pairing is not None:
+                    return TVAccess(address, pairing, YOUTUBE_PAIR_CLIENT_NAME, AccessSource.STORED)
         if native is not None and native.pairing is not None:
             return native
-        binding = self._binding(room, target)
         if binding is None:
             return native
         address = _host(binding["host"])

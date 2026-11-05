@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -10,15 +9,13 @@ import json
 import re
 import unicodedata
 
-from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType
-
 from .const import PROVIDERS
 from .diagnostics import (
     _PUBLIC_APP_IDS, _SENSITIVE, _app_provider, _public_text, _selected_format_level, async_collect_diagnostics,
     diff_reports as diff_common_reports,
 )
 from .models import CinemaError
-from .samsung_youtube import _remote_url, samsung_youtube_trace_config
+from .samsung_capture import SamsungCapture
 
 
 STANDARD_APPS = (
@@ -35,7 +32,7 @@ _SYSTEM_ALIASES = {
     "android": "androidtv", "androidtv": "androidtv", "googletv": "androidtv", "androidgoogletv": "androidtv",
     "androidtvremote": "androidtv", "firetv": "androidtv", "roku": "roku", "other": "other", "andere": "other",
 }
-_COMMON_FIELDS = ("integration_version", "created_at", "platform", "profile", "capabilities", "checks", "adapters",
+_COMMON_FIELDS = ("integration_version", "created_at", "platform", "profile", "capabilities", "checks", "adapters", "connection",
                   "identity_match", "identity_scope", "limitations", "evidence_level", "evidence_scope")
 _OPAQUE = re.compile(r"(?:[A-Za-z0-9_-]{20,}\.){2}[A-Za-z0-9_-]{10,}|[A-Za-z0-9_-]{40,}")
 
@@ -114,57 +111,32 @@ def _preview_presence(report: dict) -> tuple[set[str], bool]:
     return owners, captured
 
 
-async def _installed_app_presence(manager, room: dict, target: dict, catalog: list[dict], system: str) -> dict:
-    """One paired, read-only app-list request; discard every unmatched device value."""
+async def _installed_app_presence(manager, room: dict, target: dict, catalog: list[dict], system: str, *,
+                                   capture: SamsungCapture | None = None) -> dict:
+    """Project the shared app-list response without opening another connection."""
     result = {"status": "skipped", "reason": "existing_pairing_required", "detected": set(), "attempted": False}
     if system != "samsungtv":
         result["reason"] = "manufacturer_app_listing_not_implemented"
         return result
-    access_manager = getattr(manager, "device_access", None)
-    try:
-        access = access_manager.resolve(manager, room, target) if access_manager is not None else None
-        if access is None or access.pairing is None:
-            return result
-        result["attempted"] = True
-        result.update(status="unavailable", reason="paired_app_listing_unavailable")
-        async with asyncio.timeout(8):
-            async with ClientSession(timeout=ClientTimeout(total=8, sock_connect=3), trust_env=False,
-                                     trace_configs=[samsung_youtube_trace_config()]) as session:
-                async with session.ws_connect(_remote_url(access.host, access.pairing[0], access.client_name, access.pairing[1]),
-                                              ssl=False, max_msg_size=2 * 1024 * 1024) as ws:
-                    connected = False
-                    for _ in range(32):
-                        message = await ws.receive()
-                        if message.type != WSMsgType.TEXT:
-                            break
-                        event = message.json()
-                        if not isinstance(event, dict):
-                            continue
-                        kind = event.get("event")
-                        if kind in ("ms.error", "ms.channel.unauthorized", "ms.channel.timeOut"):
-                            break
-                        if kind == "ms.channel.connect" and not connected:
-                            await ws.send_json({"method": "ms.channel.emit", "params": {"event": "ed.installedApp.get", "to": "host"}})
-                            connected = True
-                        elif connected and kind == "ed.installedApp.get":
-                            data = event.get("data")
-                            apps = data.get("data") if isinstance(data, dict) else data
-                            if not isinstance(apps, list) or len(apps) > 512:
-                                break
-                            matches = set()
-                            for installed in apps:
-                                if not isinstance(installed, dict):
-                                    continue
-                                name, app_id = installed.get("name"), installed.get("appId")
-                                key = _name_key(name) if isinstance(name, str) and len(name) <= 512 else None
-                                owner = _PUBLIC_APP_IDS.get(app_id) if isinstance(app_id, str) and len(app_id) <= 120 else None
-                                for app in catalog:
-                                    if key in _aliases(app) or (owner is not None and _provider(app) == owner):
-                                        matches.add(app["id"])
-                            return {"status": "available", "detected": matches, "attempted": True}
-    except (ClientError, TimeoutError, OSError, ValueError, RecursionError, CinemaError):
-        pass
-    return result
+    if capture is None:
+        return result
+    result["attempted"] = capture.queries_sent
+    result.update(capture.apps_details)
+    if capture.apps is None:
+        result.update(status="unavailable" if capture.authorization != "not_checked" else "skipped")
+        result.setdefault("reason", "paired_app_listing_unavailable")
+        return result
+    matches = set()
+    for installed in capture.apps:
+        if not isinstance(installed, dict):
+            continue
+        name, app_id = installed.get("name"), installed.get("appId")
+        key = _name_key(name) if isinstance(name, str) and len(name) <= 512 else None
+        owner = _PUBLIC_APP_IDS.get(app_id) if isinstance(app_id, str) and len(app_id) <= 120 else None
+        for app in catalog:
+            if key in _aliases(app) or (owner is not None and _provider(app) == owner):
+                matches.add(app["id"])
+    return {**capture.apps_details, "status": "available", "detected": matches, "attempted": True}
 
 
 def _app_version(manager, room: dict, target: dict, app: dict, matched_sources: list[str]) -> str | None:
@@ -192,10 +164,12 @@ async def async_collect_standard_diagnostics(manager, room: dict, target: dict, 
 
     # The generic collector validates 'netflix' as a known diagnostic identity even when not configured.
     # It reads device metadata/HTTP/EDEN once, and performs no launches or pairing.
-    captured = await async_collect_diagnostics(manager, room, target, "netflix")
+    private_captures = []
+    captured = await async_collect_diagnostics(manager, room, target, "netflix", capture_sink=private_captures)
     installed = ({"status": "skipped", "reason": "device_identity_mismatch", "detected": set(), "attempted": False}
                  if captured.get("identity_match") is False
-                 else await _installed_app_presence(manager, room, target, catalog, declared_system))
+                 else await _installed_app_presence(manager, room, target, catalog, declared_system,
+                                                    capture=private_captures[0] if private_captures else None))
     report = {key: deepcopy(captured[key]) for key in _COMMON_FIELDS if key in captured}
     device = captured.get("device", {})
     report["device"] = {key: _public_text(device.get(key)) for key in ("manufacturer", "model", "firmware")}
@@ -223,7 +197,7 @@ async def async_collect_standard_diagnostics(manager, room: dict, target: dict, 
             check["selected_app_match"] = "not_determined"
     report.setdefault("checks", []).append({"id": "standard_app_listing", "status": installed["status"],
         "scope": "device_all_apps", "evidence_level": "service_detected" if installed["status"] == "available" else "not_checked",
-        "reason": installed.get("reason"),
+        **{key: installed[key] for key in ("reason", "phase", "port", "http_status", "close_code") if key in installed},
         "capture": {"source": "samsung_installed_apps", "observed_at": datetime.now(UTC).isoformat()}})
 
     sources, listing_available, listing_truncated = _source_listing(manager, target)
