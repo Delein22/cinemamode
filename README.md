@@ -6,6 +6,18 @@ Benutzerdefinierte Home-Assistant-Integration mit einer eigenen Oberfläche für
 
 ## Installation
 
+### Mit HACS
+
+1. In **HACS → Drei-Punkte-Menü → Benutzerdefinierte Repositories** die Adresse `https://github.com/Delein22/cinemamode` mit Typ **Integration** hinzufügen.
+2. **CinemaMode – Kinosteuerung** öffnen und herunterladen. Ohne veröffentlichte Releases wird der aktuelle Commit von `main` angeboten.
+3. Home Assistant neu starten und die Browserseite vollständig neu laden.
+4. Unter **Einstellungen → Geräte & Dienste → Integration hinzufügen** nach **Kinosteuerung** suchen und die Einrichtung abschließen.
+5. **Kinosteuerung** in der Seitenleiste öffnen.
+
+Wenn HACS noch einen älteren Commit ohne HACS-Metadaten anbietet, die Repository-Informationen in HACS aktualisieren und den neuesten Commit von `main` wählen.
+
+### Manuell
+
 1. Dieses Repository über **Code → Download ZIP** herunterladen und entpacken.
 2. Den vollständigen Ordner `custom_components/cinema_control` in den Home-Assistant-Konfigurationsordner kopieren. Das Ergebnis muss so aussehen:
 
@@ -23,7 +35,7 @@ Benutzerdefinierte Home-Assistant-Integration mit einer eigenen Oberfläche für
 4. Unter **Einstellungen → Geräte & Dienste → Integration hinzufügen** nach **Kinosteuerung** suchen und die Einrichtung abschließen.
 5. **Kinosteuerung** in der Seitenleiste öffnen. Falls die Oberfläche nach einer Aktualisierung noch den alten Stand zeigt, den Browser vollständig neu laden.
 
-Getestete Entwicklungsumgebung: Home Assistant **2026.10.4**. Die Installation erfolgt derzeit manuell. Ältere Versionen sind nicht geprüft.
+Getestete Entwicklungsumgebung: Home Assistant **2026.10.4**. Ältere Versionen sind nicht geprüft.
 
 ## Erste Standarddiagnose
 

@@ -3,6 +3,7 @@
 *
 !/.gitignore
 !/README.md
+!/hacs.json
 !/custom_components/
 !/custom_components/cinema_control/
 !/custom_components/cinema_control/*.py
