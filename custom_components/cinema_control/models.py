@@ -206,19 +206,28 @@ def room_record(data: dict, item_id: str) -> dict:
             if mode == "link" and profile not in ("androidtv", "androidtv_remote"):
                 raise CinemaError("Dieses Geräteprofil bietet keinen Inhaltslink-Start.")
             app_id = text(app.get("app_id", ""), "App-ID", 160, empty=True)
+            source_mode = None
+            if profile in ("samsungtv", "generic"):
+                source_mode = app.get("source_mode", "manual" if app_id else "auto")
+                if source_mode not in ("auto", "manual"):
+                    raise CinemaError("Ungültige App-Quellenzuordnung.")
+                if source_mode == "auto":
+                    app_id = ""
             if profile == "androidtv" and mode != "off":
                 if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+", app_id):
                     raise CinemaError("Für Fire TV / ADB wird eine gültige App-Paket-ID benötigt.")
             if profile == "androidtv_remote" and mode != "off" and not app_id:
                 raise CinemaError("Bitte die App-ID eintragen.")
-            if profile in ("samsungtv", "generic") and mode != "off" and not app_id:
-                raise CinemaError("Bitte den App-Namen aus der Quellenliste wählen.")
+            if source_mode == "manual" and mode != "off" and not app_id:
+                raise CinemaError("Bitte eine App-Quelle auswählen oder die automatische Zuordnung verwenden.")
             tested = app.get("tested", "untested")
             if tested not in ("untested", "app", "title", "playback"):
                 raise CinemaError("Ungültiger Teststatus.")
             if mode != "link" and tested in ("title", "playback"):
                 raise CinemaError("Titel-/Wiedergabenachweis benötigt einen Inhaltslink-Start.")
             normalized_apps[provider] = {"mode": mode, "app_id": app_id, "tested": tested}
+            if source_mode is not None:
+                normalized_apps[provider]["source_mode"] = source_mode
             if provider == "netflix":
                 normalized_apps[provider]["profile_name"] = text(
                     app.get("profile_name", ""), "Netflix-Profil", 80, empty=True)

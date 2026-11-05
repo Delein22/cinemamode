@@ -1,5 +1,5 @@
 /* Local native web component. No build step, CDN, tracking or bundled framework. */
-import {appArtwork} from "./app-catalog.js?v=0.2.27";
+import {appArtwork} from "./app-catalog.js?v=0.2.29";
 
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const id = () => crypto.randomUUID().replaceAll("-", "");
@@ -35,7 +35,7 @@ export class CinemaControlPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({mode:"open"});
-    this.shadowRoot.innerHTML = `<link rel="stylesheet" href="/cinema_control_static/cinema-panel.css?v=0.2.27"><div id="screen"></div><dialog aria-labelledby="dialog-title"><div id="form"></div></dialog><div id="notice" role="status" aria-live="polite"></div>`;
+    this.shadowRoot.innerHTML = `<link rel="stylesheet" href="/cinema_control_static/cinema-panel.css?v=0.2.29"><div id="screen"></div><dialog aria-labelledby="dialog-title"><div id="form"></div></dialog><div id="notice" role="status" aria-live="polite"></div>`;
     this.view = "favorites";
     this.query = "";
     this.filter = "";
@@ -909,6 +909,7 @@ export class CinemaControlPanel extends HTMLElement {
 
   _targetForm(target) {
     const ent = this.entity(target.entity_id);
+    const nativeSources = ["samsungtv","generic"].includes(target.profile);
     const expandedProvider = Object.keys(appLabels).find(provider => ["app", "link"].includes(target.apps?.[provider]?.mode));
     return `<fieldset class="target-config" data-target="${esc(target.id)}">
       <legend>${esc(target.name || "Neues Wiedergabeziel")}</legend>
@@ -922,33 +923,87 @@ export class CinemaControlPanel extends HTMLElement {
         <div class="form-grid">
           <label>Geräteprofil<select name="profile">${[["generic","Allgemein · Quellenwahl"],["samsungtv","Samsung Smart TV"],["androidtv","Fire TV / Android · ADB"],["androidtv_remote","Android TV Remote · Google TV"]].map(([k,v])=>`<option value="${k}" ${target.profile===k?"selected":""}>${v}</option>`).join("")}</select><span class="small muted">Passend zur Geräteintegration in Home Assistant.</span></label>
           <label>Fernbedienung<select name="remote_entity_id">${this._entityOptions("remote",target.remote_entity_id,true)}</select></label>
-          <label>HDMI-Eingang am Fernseher<input name="hdmi_source" value="${esc(target.hdmi_source)}" list="tv-sources-${target.id}" maxlength="160" placeholder="Bei TV-Apps leer lassen"><datalist id="tv-sources-${target.id}">${(this.entity(this.roomDraft.tv_entity_id)?.sources || []).map(s=>`<option value="${esc(s)}">`).join("")}</datalist></label>
+          <label>HDMI-Eingang am Fernseher<input name="hdmi_source" value="${esc(target.hdmi_source)}" list="tv-sources-${target.id}" maxlength="160" placeholder="Bei TV-Apps leer lassen"><datalist id="tv-sources-${target.id}">${this._reportedSourceNames(this.roomDraft.tv_entity_id).map(s=>`<option value="${esc(s)}">`).join("")}</datalist></label>
         </div>
       </details>
       <div class="provider-list">
         <p class="section-kicker">Streaming-Apps</p>
-        <p class="small muted">Manuelle App-Zuordnung und Prüfnachweise pro Dienst.</p>
+        <p class="small muted">${nativeSources ? "App-Namen werden aus den Quellen dieses Geräts automatisch zugeordnet. Eine abweichende Quelle kannst du bei Bedarf auswählen." : "App-Zuordnung und Prüfnachweise pro Dienst."}</p>
         ${Object.entries(appLabels).map(([provider,name])=>{
         const app = target.apps?.[provider] || {mode:"off",app_id:"",tested:"untested"};
         const state = {off:"Nicht eingerichtet",app:"Nur App öffnen",link:"Inhaltslink senden"}[app.mode] || "Nicht eingerichtet";
         return `<details class="app-config provider-settings" data-provider="${provider}" name="providers-${esc(target.id)}" ${provider === expandedProvider ? "open" : ""}>
           <summary><span>${name}</span><span class="provider-state" data-app-state>${state}</span></summary>
           <div class="form-grid">
-            <label>Startverfahren<select name="mode"><option value="off" ${app.mode==="off"?"selected":""}>Nicht eingerichtet</option><option value="app" ${app.mode==="app"?"selected":""}>Nur App öffnen</option><option value="link" ${app.mode==="link"?"selected":""}>Inhaltslink senden</option></select></label>
+            <label>Startverfahren<select name="mode"><option value="off" ${app.mode==="off"?"selected":""}>Nicht eingerichtet</option><option value="app" ${app.mode==="app"?"selected":""}>Nur App öffnen</option>${nativeSources ? (app.mode === "link" ? '<option value="link" selected disabled>Gespeichert: Inhaltslink senden · hier nicht unterstützt</option>' : "") : `<option value="link" ${app.mode==="link"?"selected":""}>Inhaltslink senden</option>`}</select>${nativeSources && app.mode === "link" ? '<span class="small muted">Wähle für diese Geräteanbindung „Nur App öffnen“ oder „Nicht eingerichtet“. Unterstützte Favoriten verwenden ihren eigenen Titelstart.</span>' : ""}</label>
             ${provider === "netflix" ? `<label>Gewünschtes Netflix-Profil<input name="profile_name" value="${esc(app.profile_name)}" maxlength="80" placeholder="Profilname wie am TV"></label>` : ""}
           </div>
           <details class="advanced-settings provider-advanced">
             <summary>Erweiterte Einstellungen</summary>
             <div class="form-grid">
-              <label>App-ID oder Quellenname<input name="app_id" value="${esc(app.app_id)}" list="app-sources-${target.id}" maxlength="160"><span class="small muted">Bei ADB der Paketname, bei Samsung der genaue Quellenname.</span></label>
+              ${nativeSources ? this._appSourceControl(target, provider, app) : `<label>App-ID<input name="app_id" value="${esc(app.app_id)}" list="app-sources-${target.id}" maxlength="160"><span class="small muted">Bei ADB der Paketname der App.</span></label>`}
               <label>Am Gerät geprüft<select name="tested">${[["untested","Ungetestet"],["app","App öffnet sich"],["title","Richtiger Titel öffnet sich"],["playback","Richtiger Inhalt spielt ab"]].map(([k,v])=>`<option value="${k}" ${app.tested===k?"selected":""}>${v}</option>`).join("")}</select></label>
             </div>
           </details>
         </details>`;
       }).join("")}
-      <datalist id="app-sources-${target.id}">${(ent?.sources || []).map(s=>`<option value="${esc(s)}">`).join("")}</datalist>
+      ${nativeSources ? "" : `<datalist id="app-sources-${target.id}">${this._reportedSourceNames(target.entity_id).map(s=>`<option value="${esc(s)}">`).join("")}</datalist>`}
       </div>
     </fieldset>`;
+  }
+
+  _reportedSourceNames(entityId) {
+    const reported = this.entity(entityId)?.sources;
+    return [...new Set((Array.isArray(reported) && reported.length <= 512 ? reported : []).filter(source =>
+      typeof source === "string" && Array.from(source).length > 0 && Array.from(source).length <= 160
+      && !Array.from(source).some(character=>character !== " " && /[\p{C}\p{Z}]/u.test(character))))];
+  }
+
+  _appSourceControl(target, provider, app) {
+    const reported = this.entity(target.entity_id)?.sources;
+    const unreadable = reported != null && (!Array.isArray(reported) || reported.length > 512);
+    const sources = this._reportedSourceNames(target.entity_id);
+    const matches = sources.filter(source => appArtwork(source).provider === provider);
+    const manual = app.source_mode === "manual" || (!app.source_mode && Boolean(app.app_id));
+    const selected = manual ? app.app_id || "" : "";
+    const automatic = matches.length === 1 ? `Automatisch erkennen · ${matches[0]}` : "Automatisch erkennen";
+    const message = selected
+      ? (sources.includes(selected) ? "Diese Quelle wurde ausdrücklich ausgewählt." : "Gespeicherte Quelle; vom Gerät derzeit nicht gemeldet.")
+      : unreadable ? "Die Quellenliste ist derzeit nicht auswertbar. Du kannst speichern und die Geräteverbindung vor dem Appstart prüfen."
+      : matches.length === 1 ? `Zugeordnet: ${matches[0]}. Der aktuelle Name wird beim Appstart vom gewählten Gerät übernommen.`
+      : matches.length > 1 ? "Mehrere passende Quellen werden gemeldet. Wähle hier die gewünschte Quelle aus."
+      : "Noch keine passende Quelle gemeldet. Du kannst speichern und den Fernseher vor dem Appstart einschalten.";
+    const hintId = `source-hint-${target.id}-${provider}`;
+    return `<label>App-Zuordnung<select name="app_id" data-source-choice aria-describedby="${esc(hintId)}"><option value="" ${!selected ? "selected" : ""}>${esc(automatic)}</option>${selected && !sources.includes(selected) ? `<option value="${esc(selected)}" selected>${esc(selected)} · gespeichert, derzeit nicht gemeldet</option>` : ""}${sources.map(source=>`<option value="${esc(source)}" ${source===selected ? "selected" : ""}>${esc(source)}</option>`).join("")}</select><span id="${esc(hintId)}" class="small muted" data-source-status role="status">${esc(message)}</span></label>`;
+  }
+
+  _refreshTargetForm(field, focusName) {
+    const openDetails = [...field.querySelectorAll("details")].map(item=>item.open);
+    const wasNative = Boolean(field.querySelector("[data-source-choice]"));
+    this.roomDraft = this._collectRoom();
+    const target = this.roomDraft.targets.find(item=>item.id === field.dataset.target);
+    const ent = this.entity(target.entity_id);
+    if (focusName === "entity_id" && ["samsungtv","androidtv","androidtv_remote"].includes(ent?.platform)) target.profile = ent.platform;
+    const native = ["samsungtv","generic"].includes(target.profile);
+    if (native !== wasNative) {
+      for (const [provider, app] of Object.entries(target.apps)) {
+        app.app_id = !native && target.profile === "androidtv" ? this.data.providers[provider]?.package || "" : "";
+        if (native) app.source_mode = "auto";
+        else delete app.source_mode;
+      }
+    }
+    if (["androidtv","androidtv_remote"].includes(target.profile)) {
+      for (const [provider, app] of Object.entries(target.apps)) {
+        delete app.source_mode;
+        if (target.profile === "androidtv" && !app.app_id) app.app_id = this.data.providers[provider]?.package || "";
+      }
+    }
+    const fragment = document.createElement("template");
+    fragment.innerHTML = this._targetForm(target);
+    const replacement = fragment.content.firstElementChild;
+    [...replacement.querySelectorAll("details")].forEach((item,index)=>{ item.open = openDetails[index] ?? item.open; });
+    field.replaceWith(replacement);
+    replacement.querySelector(`[name="${focusName}"]`)?.focus();
   }
 
   _collectRoom() {
@@ -958,6 +1013,7 @@ export class CinemaControlPanel extends HTMLElement {
       const val = name => field.querySelector(`[name="${name}"]`).value;
       return {id:field.dataset.target,name:val("target_name"),entity_id:val("entity_id"),profile:val("profile"),remote_entity_id:val("remote_entity_id"),hdmi_source:val("hdmi_source"),apps:Object.fromEntries([...field.querySelectorAll("[data-provider]")].map(app=>{
         const values=Object.fromEntries(["mode","app_id","tested"].map(key=>[key,app.querySelector(`[name="${key}"]`).value]));
+        if (["samsungtv","generic"].includes(val("profile"))) values.source_mode = values.app_id ? "manual" : "auto";
         if (app.dataset.provider === "netflix") values.profile_name=app.querySelector('[name="profile_name"]').value;
         return [app.dataset.provider,values];
       }))};
@@ -1100,18 +1156,17 @@ export class CinemaControlPanel extends HTMLElement {
     else if (el.id === "tv-source" && el.value) this._command("control",{room_id:this.roomId,target_id:this.targetId,action:"source",value:el.value}).catch(err=>this._notify(err.message,true));
     else if (el.id === "draft-tv") {
       this.roomDraft.tv_entity_id = el.value;
-      for (const list of this.shadowRoot.querySelectorAll('datalist[id^="tv-sources"]')) list.innerHTML = (this.entity(el.value)?.sources || []).map(s=>`<option value="${esc(s)}">`).join("");
+      for (const list of this.shadowRoot.querySelectorAll('datalist[id^="tv-sources"]')) list.innerHTML = this._reportedSourceNames(el.value).map(s=>`<option value="${esc(s)}">`).join("");
     } else if (el.name === "mode") {
       el.closest("[data-provider]").querySelector('[name="tested"]').value="untested";
-    } else if (el.name === "entity_id") {
-      const field = el.closest("fieldset"), ent = this.entity(el.value);
-      if (["samsungtv","androidtv","androidtv_remote"].includes(ent?.platform)) field.querySelector('[name="profile"]').value=ent.platform;
-      if (field.querySelector('[name="profile"]').value === "androidtv") {
-        for (const app of field.querySelectorAll("[data-provider]")) {
-          const input=app.querySelector('[name="app_id"]');
-          if (!input.value) input.value=this.data.providers[app.dataset.provider]?.package || "";
-        }
-      }
+    } else if (["entity_id","profile"].includes(el.name) && el.closest("fieldset[data-target]")) {
+      this._refreshTargetForm(el.closest("fieldset[data-target]"), el.name);
+    } else if (el.matches?.("select[data-source-choice]")) {
+      const field = el.closest("fieldset[data-target]"), provider = el.closest("[data-provider]").dataset.provider;
+      const draft = this._collectRoom().targets.find(item=>item.id === field.dataset.target);
+      const template = document.createElement("template");
+      template.innerHTML = this._appSourceControl(draft, provider, draft.apps[provider]);
+      el.closest("label").querySelector("[data-source-status]").textContent = template.content.querySelector("[data-source-status]").textContent;
     }
   }
   _input(event) {

@@ -29,6 +29,7 @@ from .start_assistant import StartAssistant
 from .plex import PROFILE_FILE as PLEX_PROFILE_FILE, PlexLauncher
 from .samsung_disney import PLAY_DELAY, PROFILE_FILE, SamsungDisneyLauncher, disney_title_id
 from .samsung_netflix import SamsungNetflixLauncher
+from .source_matching import resolve_auto_source
 from .samsung_youtube import (
     SAMSUNG_DEFAULT_CLIENT_NAME, YOUTUBE_PAIR_CLIENT_NAME, SamsungPairingError, async_pair_samsung_youtube,
     samsung_youtube_pairing, youtube_video_id,
@@ -781,10 +782,21 @@ class CinemaManager:
             # A reported native app can be prepared without a provider mapping.
             if target["profile"] == "samsungtv":
                 state = self.hass.states.get(target["entity_id"])
-                if not state or "Netflix" not in state.attributes.get("source_list", []):
+                if not state:
                     raise CinemaError("Der Fernseher meldet die Netflix-App derzeit nicht.")
+                sources = state.attributes.get("source_list", [])
+                source_mode = (app or {}).get("source_mode", "manual" if (app or {}).get("app_id") else "auto")
+                manual_source = (app or {}).get("app_id", "")
+                if app and app.get("mode") != "off" and source_mode == "manual" and manual_source:
+                    if not isinstance(sources, (list, tuple)) or manual_source not in sources:
+                        raise CinemaError("Die gewählte Netflix-Quelle wird vom Fernseher gerade nicht gemeldet.",
+                                          "app_source_unavailable")
+                    prepared_source = {"app_id": manual_source, "source_mode": "manual"}
+                else:
+                    resolve_auto_source("netflix", sources, state.name)
+                    prepared_source = {"app_id": "", "source_mode": "auto"}
                 target = deepcopy(target)
-                app = {**(app or {}), "mode": "app", "app_id": "Netflix", "tested": "untested"}
+                app = {**(app or {}), "mode": "app", "tested": "untested", **prepared_source}
                 target["apps"]["netflix"] = app
         direct_netflix = bool(favorite and provider == "netflix" and self._netflix_launcher(room, target))
         direct_disney = bool(favorite and provider == "disney" and self._disney_launcher(room, target))
@@ -880,8 +892,17 @@ class CinemaManager:
             if not future.done():
                 future.cancel()
 
-    async def _open_app(self, target: dict, app: dict, context: Context) -> None:
+    async def _open_app(self, target: dict, app: dict, context: Context, *, provider: str | None = None) -> dict:
         player = target["entity_id"]
+        app = dict(app)
+        if target["profile"] in ("generic", "samsungtv"):
+            source_mode = app.get("source_mode", "manual" if app.get("app_id") else "auto")
+            if source_mode == "auto":
+                state = self.hass.states.get(player)
+                app["app_id"] = resolve_auto_source(
+                    provider, state.attributes.get("source_list", []) if state else [],
+                    state.name if state else target.get("name", "das gewählte Gerät"),
+                )
         if target["profile"] == "androidtv_remote":
             if not self.has_feature(player, Feature.PLAY_MEDIA):
                 raise CinemaError("Die Integration bietet keinen Appstart über play_media.")
@@ -894,6 +915,7 @@ class CinemaManager:
                 if app["app_id"] not in self.hass.states.get(player).attributes.get("source_list", []):
                     raise CinemaError("Die eingerichtete App fehlt in der aktuellen Quellenliste.")
             await self._service("media_player", "select_source", player, context, source=app["app_id"])
+        return app
 
     async def _run(self, room: dict, target: dict, favorite: dict | None, provider: str,
                    context: Context, job: dict, entities: set[str]) -> None:
@@ -1024,7 +1046,7 @@ class CinemaManager:
                 return
             if provider == "netflix":
                 self._stage(job, "dispatching", "Netflix-App öffnen …")
-                await self._open_app(target, app, context)
+                app = await self._open_app(target, app, context, provider=provider)
                 await self._await_netflix_profile(room, target, job)
                 if not favorite:
                     job["result"] = "profile_user_confirmed"
@@ -1045,7 +1067,7 @@ class CinemaManager:
                 else:
                     raise CinemaError("Kein Inhaltslink-Verfahren für dieses Gerät eingerichtet.")
             else:
-                await self._open_app(target, app, context)
+                app = await self._open_app(target, app, context, provider=provider)
             job["result"] = "command_sent"
             self._stage(job, "observing", "Befehl gesendet. Warte auf Geräterückmeldung …")
             deadline = asyncio.get_running_loop().time() + FEEDBACK_TIMEOUT
