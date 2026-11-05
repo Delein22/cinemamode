@@ -3,7 +3,7 @@
   "name": "Kinosteuerung",
   "documentation": "https://github.com/Delein22/cinemamode#readme",
   "issue_tracker": "https://github.com/Delein22/cinemamode/issues",
-  "version": "0.2.27",
+  "version": "0.2.28",
   "config_flow": true,
   "dependencies": ["frontend", "http", "websocket_api", "panel_custom"],
   "requirements": [],

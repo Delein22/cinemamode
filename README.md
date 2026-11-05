@@ -2,7 +2,7 @@
 
 Benutzerdefinierte Home-Assistant-Integration mit einer eigenen Oberfläche für TV-Steuerung, Streaming-Favoriten und Direktstart-Diagnosen.
 
-**Version 0.2.27 · Beta**
+**Version 0.2.28 · Beta**
 
 ## Installation
 
@@ -52,13 +52,23 @@ Die Diagnose startet keine Filme und installiert keine Software auf dem TV. Sie 
 
 Für die normale Steuerung zunächst den Fernseher beziehungsweise Zuspieler über seine passende Home-Assistant-Integration einrichten. Anschließend in CinemaMode einen Raum und ein Wiedergabeziel zuordnen.
 
+Läuft CinemaMode auf demselben Home Assistant wie die Fernseher, bleiben die Optionen für eine andere Home-Assistant-Instanz deaktiviert. URL, Zugriffsschlüssel und zusätzliche Entitätskennungen sind dafür nicht nötig. Für TV-Apps den jeweiligen Fernseher auch als Wiedergabegerät des Raums auswählen.
+
 - Vorhandene Gerätefunktionen wie Ein/Aus, Lautstärke, Quellenwahl und Navigation verwenden.
 - Filme, Folgen und Videos als Favoriten mit Inhaltslink und optionalem Bild speichern.
 - Bilder über Dateiauswahl oder Drag-and-drop hinzufügen.
 - Unterstützte App-Starts über eine horizontale App-Auswahl ausführen.
 - Unter den erweiterten Diagnoseoptionen zwei Titel in sechs einzeln gestarteten Fällen prüfen und bestätigte lokale Startprofile speichern.
 
-Die tatsächlich angebotenen Funktionen richten sich nach der Geräteanbindung. Einige gerätespezifische Samsung-Startverfahren sowie Plex benötigen zusätzliche private Konfiguration am jeweiligen Home Assistant. Diese Einstellungen und Zugangsdaten werden nicht mitgeliefert.
+### Netflix direkt auf Samsung-Geräten
+
+Für lokale Samsung-TVs verwendet CinemaMode die bereits vorhandene Samsung-Kopplung. Beim Öffnen eines Netflix-Favoriten liest es die aktuelle Netflix-Vorschau **dieses Geräts** und sendet den Titelaufruf selbst an den TV. Ein eigener `rest_command` oder eine YAML-Änderung ist dafür nicht erforderlich. Wohnzimmer-TV und Monitor verwenden jeweils ihre eigene Adresse, Kopplung und Vorschau.
+
+Dieser Weg setzt voraus, dass die Firmware eine passende Netflix-Preapp-Aktion in der Vorschau liefert. Fehlt das bekannte Format, wird kein Titelbefehl gesendet; die Meldung verweist auf die Diagnose. Ein angenommener Aufruf bestätigt keine Wiedergabe und garantiert keine automatische Profilauswahl. Die neu angebundene Kombination muss am jeweiligen Gerät geprüft werden.
+
+Die alte optionale Netflix-Aktion für eine entfernte HA-Instanz bleibt für vorhandene Testserver-Verbindungen nutzbar. Sie wird beim lokalen Start nicht benötigt; bestehende YAML-Einträge werden nicht automatisch geändert oder entfernt.
+
+Die tatsächlich angebotenen Funktionen richten sich nach der Geräteanbindung. Einige gerätespezifische Samsung-Startverfahren für weitere Dienste sowie Plex benötigen zusätzliche private Konfiguration am jeweiligen Home Assistant. Diese Einstellungen und Zugangsdaten werden nicht mitgeliefert.
 
 ## Grenzen der Beta
 

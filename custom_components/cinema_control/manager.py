@@ -28,6 +28,7 @@ from .device_access import DeviceAccess
 from .start_assistant import StartAssistant
 from .plex import PROFILE_FILE as PLEX_PROFILE_FILE, PlexLauncher
 from .samsung_disney import PLAY_DELAY, PROFILE_FILE, SamsungDisneyLauncher, disney_title_id
+from .samsung_netflix import SamsungNetflixLauncher
 from .samsung_youtube import (
     SAMSUNG_DEFAULT_CLIENT_NAME, YOUTUBE_PAIR_CLIENT_NAME, SamsungPairingError, async_pair_samsung_youtube,
     samsung_youtube_pairing, youtube_video_id,
@@ -463,9 +464,29 @@ class CinemaManager:
 
     def _netflix_launcher(self, room: dict, target: dict):
         player = target["entity_id"]
-        if target["profile"] == "samsungtv" and player == room["tv_entity_id"]:
-            return self.hass.data.get(DOMAIN, {}).get("netflix_launchers", {}).get(player)
-        return None
+        if target["profile"] != "samsungtv" or player != room["tv_entity_id"]:
+            return None
+        # Retain explicitly configured remote bridges; local TVs need no HA loopback.
+        legacy = self.hass.data.get(DOMAIN, {}).get("netflix_launchers", {}).get(player)
+        if legacy is not None:
+            return legacy
+        if self.platform(player) != "samsungtv":
+            return None
+        access = self.device_access.resolve(self, room, target)
+        if access is None or access.pairing is None:
+            return None
+        signature = self.device_access.signature(room, target)
+
+        def validate() -> None:
+            current_room, current_target = self.resolve(room["id"], target["id"])
+            if (self.closed or current_target["entity_id"] != player
+                    or current_room["tv_entity_id"] != player
+                    or current_target["profile"] != "samsungtv"
+                    or self.device_access.signature(current_room, current_target) != signature):
+                raise CinemaError("Die TV-Verbindung wurde geändert. Bitte erneut starten.", "stale_device")
+            self._check_prepared(current_room, current_target)
+
+        return SamsungNetflixLauncher(access, validate=validate)
 
     def _disney_launcher(self, room: dict, target: dict) -> SamsungDisneyLauncher | None:
         launcher = self.disney_launcher
@@ -988,7 +1009,7 @@ class CinemaManager:
                 self._stage(job, "done", manual)
                 return
             if favorite and provider == "netflix" and (launcher := self._netflix_launcher(room, target)):
-                self._stage(job, "dispatching", "Netflix-Titel über die Hauptinstanz senden …")
+                self._stage(job, "dispatching", "Netflix-Titel an den gewählten Fernseher senden …")
                 content_id = urlsplit(favorite["url"]).path.rstrip("/").rsplit("/", 1)[-1]
                 try:
                     await launcher.launch_netflix(content_id)

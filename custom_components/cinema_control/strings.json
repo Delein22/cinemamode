@@ -12,15 +12,15 @@
   "options": {
     "step": {
       "init": {
-        "title": "Fernseher aus der Hauptinstanz",
-        "description": "Verwende den Samsung, der in deinem normalen Home Assistant bereits eingerichtet ist. Der lokale HA-Test kann im bisherigen Netz bleiben. Trage den Zugriffsschlüssel nur hier ein. Leer lassen behält einen vorhandenen Schlüssel bei unveränderter Adresse. Geräte werden vor dem Speichern nur lesend geprüft.",
+        "title": "Andere Home-Assistant-Instanz (optional)",
+        "description": "Diese Verbindung brauchst du nur für Samsung-Geräte auf einer anderen Home-Assistant-Instanz. Läuft Kinosteuerung bereits auf deinem Hauptserver, lasse den ersten Haken aus und wähle deine Geräte unter Kinosteuerung → Einrichtung → Raum hinzufügen. Dann sind hier keine weiteren Angaben nötig. Bei einer externen Verbindung behält ein leeres Schlüsselfeld den vorhandenen Schlüssel bei unveränderter Adresse. Geräte werden vor dem Speichern nur lesend geprüft.",
         "data": {
-          "use_main_ha": "Vorhandenen Samsung aus der Hauptinstanz verwenden",
+          "use_main_ha": "Samsung-Geräte einer anderen Home-Assistant-Instanz verwenden",
           "main_ha_url": "Adresse deiner normalen Home-Assistant-Instanz",
           "main_ha_token": "Zugriffsschlüssel der Hauptinstanz",
           "main_ha_tv": "TV-Entität in der Hauptinstanz (media_player.…)",
           "main_ha_remote": "Zugehörige Fernbedienung (remote.…, optional)",
-          "main_ha_netflix": "Netflix-Titelstart für den ersten TV aktivieren (benötigt die Aktion cinema_netflix_wohnzimmer auf der Hauptinstanz)",
+          "main_ha_netflix": "Alten Netflix-Start für den ersten externen TV verwenden (benötigt dort cinema_netflix_wohnzimmer; für lokale TVs nicht nötig)",
           "main_ha_additional": "Weitere Geräte der Hauptinstanz (je Zeile media_player.…, optional gefolgt von , remote.…)"
         }
       }
