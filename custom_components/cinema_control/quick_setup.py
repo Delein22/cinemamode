@@ -30,7 +30,7 @@ _SAFE_BEFORE_SEND = frozenset({"unsupported_adapter", "start_format_unknown", "n
 _PUBLIC_ERRORS = _SAFE_BEFORE_SEND | {"busy", "start_outcome_unknown", "start_failed", "transport_unavailable",
                                     "netflix_start_unavailable", "netflix_start_rejected", "not_found", "invalid",
                                     "profile_timeout", "profile_not_confirmed", "dial_start_rejected", "dial_start_unknown",
-                                    "zuhause_start_unknown"}
+                                    "zuhause_start_unknown", "zuhause_start_rejected"}
 _EVIDENCE = {"confirmed_cases": 1, "titles": 1, "source": "user", "situations": 1,
              "establishes_family_compatibility": False}
 _MESSAGES = {

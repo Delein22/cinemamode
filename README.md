@@ -2,7 +2,7 @@
 
 Benutzerdefinierte Home-Assistant-Integration mit einer eigenen Oberfläche für TV-Steuerung, Streaming-Favoriten und Direktstart-Diagnosen.
 
-**Version 0.2.34 · Beta**
+**Version 0.2.35 · Beta**
 
 ## Installation
 
@@ -56,7 +56,9 @@ Bei Samsung kann die Anmeldung erfolgreich sein, obwohl die Firmware weder eine 
 
 Ist auf dem gewählten Samsung die Zuhause-App ab **1.4.14** installiert, erkennt die Diagnose ihre Version über die lokale Geräte-API. **Direktstart einrichten** prüft dann bevorzugt **Über Zuhause (experimentell)**, sofern noch kein anderer bestätigter Startweg ausgewählt ist. Dieser Weg benötigt keine Samsung-Vorschaukacheln. Er übergibt den Netflix-Link einmalig an Zuhause; die App versucht anschließend die native Tizen-Übergabe an Netflix.
 
-Erst **Richtiger Titel läuft** speichert diesen Weg für spätere Favoritenaufrufe. Eine erreichbare Zuhause-App oder ein gesendeter Auftrag bestätigt noch keinen funktionierenden Netflix-Titelstart. Die Wiedergabe auf dem Monitor ist noch nicht bestätigt. Profilauswahl und PIN bleiben bei diesem Versuch am Gerät; ein Start ab 0:00 wird nicht zugesichert. Für diesen Weg sind keine zusätzlichen YAML-Aktionen erforderlich. Er gilt ausschließlich für Netflix auf dem geprüften Gerät mit Zuhause und wird nicht als allgemeine Tizen-Kompatibilität gewertet.
+Ab 0.2.35 wird der Auftrag über einen eigenen SmartView-App-Kanal mit `ms.application.start` und StartArgs unter `params.data` gesendet. Die Nachrichtenstruktur wurde anhand von Samsungs [offizieller Senderbibliothek](https://github.com/SamsungDForum/SmartViewSDKCastVideo/blob/master/SmartViewSDKCastVideo_Android/MultiScreenLib/libs/android-smartview-sdk-2.3.7.jar) geprüft. Kinosteuerung wartet auf die Antwort mit derselben Auftragskennung. Eine Ablehnung oder eine fehlende Bestätigung löst keinen weiteren Titelaufruf automatisch aus. Dafür wird weder die Samsung-Bibliothek installiert noch eine zusätzliche TV-App benötigt; Zuhause bleibt bei 1.4.14.
+
+Erst **Richtiger Titel läuft** speichert diesen Weg für spätere Favoritenaufrufe. Eine erreichbare Zuhause-App, ein gesendeter Auftrag oder ein bestätigter App-Start belegt noch keinen funktionierenden Netflix-Titelstart. Die Zustellung und Wiedergabe auf dem Monitor sind mit dem korrigierten Verfahren noch nicht bestätigt. Profilauswahl und PIN bleiben bei diesem Versuch am Gerät; ein Start ab 0:00 wird nicht zugesichert. Für diesen Weg sind keine zusätzlichen YAML-Aktionen erforderlich. Er gilt ausschließlich für Netflix auf dem geprüften Gerät mit Zuhause und wird nicht als allgemeine Tizen-Kompatibilität gewertet.
 
 ## Standarddiagnose ohne Titelstart
 
