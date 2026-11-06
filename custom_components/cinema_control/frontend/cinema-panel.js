@@ -1,5 +1,5 @@
 /* Local native web component. No build step, CDN, tracking or bundled framework. */
-import {appArtwork} from "./app-catalog.js?v=0.2.32";
+import {appArtwork} from "./app-catalog.js?v=0.2.33";
 
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const id = () => crypto.randomUUID().replaceAll("-", "");
@@ -37,7 +37,7 @@ export class CinemaControlPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({mode:"open"});
-    this.shadowRoot.innerHTML = `<link rel="stylesheet" href="/cinema_control_static/cinema-panel.css?v=0.2.32"><div id="screen"></div><dialog aria-labelledby="dialog-title"><div id="form"></div></dialog><div id="notice" role="status" aria-live="polite"></div>`;
+    this.shadowRoot.innerHTML = `<link rel="stylesheet" href="/cinema_control_static/cinema-panel.css?v=0.2.33"><div id="screen"></div><dialog aria-labelledby="dialog-title"><div id="form"></div></dialog><div id="notice" role="status" aria-live="polite"></div>`;
     this.view = "favorites";
     this.query = "";
     this.filter = "";
@@ -430,6 +430,9 @@ export class CinemaControlPanel extends HTMLElement {
     if (session == null) return !expectedId;
     return Boolean(typeof session === "object" && !Array.isArray(session) && typeof session.id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(session.id) && quickStates.has(session.state)
       && (!expectedId || session.id === expectedId)
+      && (session.connection_action == null || ["retry","pair"].includes(session.connection_action))
+      && (session.can_retry == null || typeof session.can_retry === "boolean")
+      && (session.can_connect == null || typeof session.can_connect === "boolean")
       && (session.favorite_id == null || session.favorite_id === state.favoriteId)
       && (session.room_id == null || session.room_id === state.roomId)
       && (session.target_id == null || session.target_id === state.targetId));
@@ -446,8 +449,13 @@ export class CinemaControlPanel extends HTMLElement {
     const canRecord = ["awaiting_result","uncertain"].includes(phase) && session?.can_record !== false;
     const canNext = phase === "ready" && session?.can_next !== false;
     const favorite = favorites.find(item=>item.id === state.favoriteId);
-    const hasChoice = choices.some(item=>item.room.id === state.roomId && item.target.id === state.targetId);
-    const titles = {idle:"Bereit für den ersten Test",ready:"Ein weiterer Startweg ist verfügbar",running:"Gerät und Startweg werden geprüft",connection_required:"Verbindung am Fernseher bestätigen",awaiting_result:"Was zeigt der Fernseher?",awaiting_profile:"Profil am Fernseher auswählen",uncertain:"Ergebnis des Aufrufs ist noch offen",saved:"Erster Titeltest bestätigt",exhausted:"Kein bestätigter Startweg gefunden",cancelled:"Test beendet"};
+    const selected = choices.find(item=>item.room.id === state.roomId && item.target.id === state.targetId);
+    const hasChoice = Boolean(selected);
+    const selectedEntity = this.entity(selected?.target.entity_id);
+    const retryConnection = phase === "connection_required" && (session.connection_action === "retry" || session.can_retry === true);
+    const pairConnection = phase === "connection_required" && !retryConnection && session.can_connect !== false;
+    const titles = {idle:"Bereit für den ersten Test",ready:"Ein weiterer Startweg ist verfügbar",running:"Gerät und Startweg werden geprüft",connection_required:retryConnection ? "Gewähltes Gerät prüfen" : "Verbindung am Fernseher bestätigen",awaiting_result:"Was zeigt der Fernseher?",awaiting_profile:"Profil am Fernseher auswählen",uncertain:"Ergebnis des Aufrufs ist noch offen",saved:"Erster Titeltest bestätigt",exhausted:"Kein bestätigter Startweg gefunden",cancelled:"Test beendet"};
+    const pendingMessage = state.changing ? "Bisherigen Test beenden …" : state.pendingAction === "connect" ? "Bestätige die Gerätefreigabe am Fernseher, falls sie erscheint." : state.pendingAction === "retry" ? "Das gewählte Gerät wird mit der vorhandenen Verbindung erneut geprüft …" : "Gewähltes Gerät und Startweg werden geprüft …";
     const attempts = Array.isArray(session?.attempts) ? session.attempts.slice(0,3) : [];
     const skippedReasons = {preview_unavailable:"Die Home-Vorschau wurde nicht geliefert.",service_not_observed:"Der benötigte App-Dienst wurde nicht erkannt."};
     const routeNames = {existing:"Bisheriger Startweg",samsung_ws:"Samsung-Vorschau",samsung_dial_netflix:"Netflix über DIAL"};
@@ -458,20 +466,21 @@ export class CinemaControlPanel extends HTMLElement {
       <div class="quick-setup" aria-busy="${busy}">
         <p class="muted">Lass den Fernseher eingeschaltet. Wähle ein Wiedergabegerät und einen Favoriten; die App wird aus dem Favoriten übernommen.</p>
         ${!choices.length ? `<div class="empty"><p>Ordne zuerst einen Fernseher oder Zuspieler einem Raum zu.</p><button data-op="room-new">Raum einrichten</button></div>` : !favorites.length ? `<div class="empty"><p>Speichere zuerst einen Favoriten mit dem gewünschten Inhaltslink.</p><button data-op="favorite-new">Favorit hinzufügen</button></div>` : `
-        <div class="form-grid quick-choice"><label>Wiedergabegerät<select id="quick-target" ${busy ? "disabled" : ""}>${choices.map((item,index)=>`<option value="${index}" ${item.room.id===state.roomId && item.target.id===state.targetId ? "selected" : ""}>${esc(item.room.name)} · ${esc(this.entity(item.target.entity_id)?.name || item.target.name)}</option>`).join("")}</select></label>
+        <div class="form-grid quick-choice"><label>Wiedergabegerät<select id="quick-target" ${busy ? "disabled" : ""}>${choices.map((item,index)=>`<option value="${index}" ${item.room.id===state.roomId && item.target.id===state.targetId ? "selected" : ""}>${esc(item.room.name)} · ${esc(this.entity(item.target.entity_id)?.name || item.target.name)} · ${esc(states[this.entity(item.target.entity_id)?.state] || "Zustand unbekannt")}</option>`).join("")}</select></label>
         <label>Testfavorit<select id="quick-favorite" ${busy ? "disabled" : ""}>${favorites.map(item=>`<option value="${esc(item.id)}" ${item.id===state.favoriteId ? "selected" : ""}>${esc(item.name)} · ${esc(labels[item.provider] || item.provider)}</option>`).join("")}</select></label></div>
+        ${selected ? `<section class="panel" aria-label="Gewähltes Gerät"><p class="section-kicker">Dieser Titeltest steuert</p><h3 id="quick-device-name">${esc(selectedEntity?.name || selected.target.name)}</h3><p id="quick-device-state" class="small">${esc(selected.room.name)} · ${esc(selected.target.name)} · ${esc(states[selectedEntity?.state] || "Zustand unbekannt")}</p>${selected.target.entity_id !== selected.room.tv_entity_id ? `<p class="small muted">Fernseher im Raum: ${esc(this.entity(selected.room.tv_entity_id)?.name || selected.room.tv_entity_id)}</p>` : ""}<details class="advanced-settings"><summary>Gerätekennung</summary><p class="small muted">${esc(selected.target.entity_id)}</p></details></section>` : ""}
         <section class="quick-progress ${phase === "saved" ? "quick-confirmed" : ""}" aria-labelledby="quick-state-title">
           <p class="section-kicker">Verbindung → Startweg → Titeltest</p><h3 id="quick-state-title" tabindex="-1">${esc(titles[phase] || "Titeltest")}</h3>
-          <p id="quick-message" role="status" aria-live="polite">${esc(busy ? state.changing ? "Bisherigen Test beenden …" : "Bitte warten. Bestätige eine Freigabe am Fernseher, falls sie erscheint." : session?.message || "Der Test öffnet die App und fordert den ausgewählten Titel am Fernseher an.")}</p>
+          <p id="quick-message" role="status" aria-live="polite">${esc(busy ? pendingMessage : session?.message || "Der Test öffnet die App und fordert den ausgewählten Titel am Fernseher an.")}</p>
           ${favorite ? `<p class="small muted">Gewählter Titel: ${esc(favorite.name)}</p>` : ""}
           ${phase === "awaiting_result" || phase === "uncertain" ? `<p class="small muted">Ein angenommener Befehl bestätigt noch keine Wiedergabe. Bestätige nur, was du am Bildschirm tatsächlich siehst.</p>` : ""}
           ${phase === "awaiting_profile" ? `<p>Wähle dein gewünschtes Profil am TV. Eine Profil-PIN gibst du dort ein. Bestätige anschließend hier die Auswahl.</p>` : ""}
-          ${phase === "connection_required" ? `<p>Mit „TV neu verbinden“ wird eine Gerätefreigabe angefragt. Bestätige gegebenenfalls „Zulassen“ am Fernseher.</p>` : ""}
+          ${retryConnection ? `<p>Schalte das oben ausgewählte Gerät ein und prüfe, ob Raum und Wiedergabegerät stimmen. „Erneut prüfen“ verwendet die vorhandene Verbindung.</p>` : pairConnection ? `<p>Mit „TV neu verbinden“ wird eine Gerätefreigabe angefragt. Bestätige gegebenenfalls „Zulassen“ am Fernseher.</p>` : ""}
           ${phase === "saved" ? `<p class="small">Ein Titel in einer Ausgangssituation wurde bestätigt. Dieser Startweg wird lokal für dieses Gerät und diese App verwendet.</p>` : ""}
           ${phase === "exhausted" ? `<p class="small">Der Bericht enthält die erkannten Voraussetzungen und den Verlauf. Er kann helfen, einen weiteren Startweg zu ergänzen.</p>` : ""}
         </section>
         ${canBegin ? `<button class="primary" data-op="quick-begin" ${busy || !hasChoice || !favorite ? "disabled" : ""}>TV prüfen und Titel testen</button>` : ""}
-        ${phase === "connection_required" ? `<button class="primary" data-op="quick-connect" ${busy ? "disabled" : ""}>TV neu verbinden</button>` : ""}
+        ${retryConnection ? `<button class="primary" data-op="quick-retry" ${busy || session.can_retry === false ? "disabled" : ""}>Erneut prüfen</button>` : pairConnection ? `<button class="primary" data-op="quick-connect" ${busy ? "disabled" : ""}>TV neu verbinden</button>` : ""}
         ${phase === "awaiting_profile" ? `<button class="primary" data-op="quick-continue-profile" ${busy ? "disabled" : ""}>Profil ist ausgewählt</button>` : ""}
         ${canNext ? `<button class="primary" data-op="quick-next" ${busy ? "disabled" : ""}>Nächsten passenden Weg testen</button>` : ""}
         ${phase === "running" && !busy ? `<button data-op="quick-status">Status aktualisieren</button>` : ""}
@@ -526,13 +535,14 @@ export class CinemaControlPanel extends HTMLElement {
       if (action === "record") {
         if (!Object.hasOwn(quickOutcomes,outcome) || !["awaiting_result","uncertain"].includes(session.state) || session.can_record === false) return;
         data.outcome = outcome;
-      } else if (action === "connect" && session.state !== "connection_required") return;
+      } else if (action === "connect" && (session.state !== "connection_required" || session.connection_action === "retry" || session.can_connect === false)) return;
+      else if (action === "retry" && (session.state !== "connection_required" || session.can_retry === false || !(session.connection_action === "retry" || session.can_retry === true))) return;
       else if (action === "next" && (session.state !== "ready" || session.can_next === false)) return;
       else if (action === "continue_profile" && session.state !== "awaiting_profile") return;
-      else if (!["connect","next","continue_profile","cancel"].includes(action)) return;
+      else if (!["connect","retry","next","continue_profile","cancel"].includes(action)) return;
     }
     const expectedId = action === "begin" ? state.pendingSessionId : session?.id || "";
-    state.pending = true; state.error = "";
+    state.pending = true; state.pendingAction = action; state.error = "";
     this._renderQuickSetupForm();
     try {
       const result = await this._command("quick_setup",{room_id:state.roomId,target_id:state.targetId,action,data});
@@ -547,6 +557,7 @@ export class CinemaControlPanel extends HTMLElement {
       if (this.quickSetup === state) state.error = typeof error?.message === "string" ? error.message.slice(0,300) : "Die Einrichtung konnte nicht abgeschlossen werden.";
     } finally {
       state.pending = false;
+      state.pendingAction = "";
       state.pendingSessionId = "";
       if (this.quickSetup === state) {
         this._renderQuickSetupForm();
@@ -1212,6 +1223,7 @@ export class CinemaControlPanel extends HTMLElement {
     const target = this.roomDraft.targets.find(item=>item.id === field.dataset.target);
     const ent = this.entity(target.entity_id);
     if (focusName === "entity_id" && ["samsungtv","androidtv","androidtv_remote"].includes(ent?.platform)) target.profile = ent.platform;
+    if (focusName === "entity_id" && target.entity_id === this.roomDraft.tv_entity_id) target.hdmi_source = "";
     const native = ["samsungtv","generic"].includes(target.profile);
     if (native !== wasNative) {
       for (const [provider, app] of Object.entries(target.apps)) {
@@ -1294,7 +1306,7 @@ export class CinemaControlPanel extends HTMLElement {
       else if (op === "quick-open") this._quickSetupForm();
       else if (op === "quick-download") this._downloadQuickReport();
       else if (op.startsWith("quick-")) {
-        const action = {"quick-begin":"begin","quick-connect":"connect","quick-next":"next","quick-record":"record","quick-continue-profile":"continue_profile","quick-cancel":"cancel","quick-status":"status"}[op];
+        const action = {"quick-begin":"begin","quick-connect":"connect","quick-retry":"retry","quick-next":"next","quick-record":"record","quick-continue-profile":"continue_profile","quick-cancel":"cancel","quick-status":"status"}[op];
         if (action) await this._quickAction(action,button.dataset.outcome || "");
       }
       else if (op === "diagnostic-open") this._diagnosticForm();
@@ -1329,7 +1341,8 @@ export class CinemaControlPanel extends HTMLElement {
       else if (op === "target-add") {
         this.roomDraft = this._collectRoom();
         if (this.roomDraft.targets.length >= 12) throw new Error("Maximal zwölf Wiedergabeziele pro Raum.");
-        const target = {id:id(),name:"",entity_id:"",profile:"generic",remote_entity_id:"",hdmi_source:"",apps:{}};
+        const roomTV = this.entity(this.roomDraft.tv_entity_id);
+        const target = {id:id(),name:roomTV ? "TV-Apps" : "",entity_id:roomTV?.entity_id || "",profile:["samsungtv","androidtv","androidtv_remote"].includes(roomTV?.platform) ? roomTV.platform : "generic",remote_entity_id:"",hdmi_source:"",apps:{}};
         this.shadowRoot.querySelector("#targets-form").insertAdjacentHTML("beforeend",this._targetForm(target));
       } else if (op === "target-remove") button.closest("fieldset").remove();
       else if (op === "favorite-delete" || op === "room-delete") {

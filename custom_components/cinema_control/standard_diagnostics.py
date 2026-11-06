@@ -123,7 +123,7 @@ async def _installed_app_presence(manager, room: dict, target: dict, catalog: li
     result["attempted"] = capture.queries_sent
     result.update(capture.apps_details)
     if capture.apps is None:
-        result.update(status="unavailable" if capture.authorization != "not_checked" else "skipped")
+        result.update(status="skipped" if capture.apps_details.get("reason") == "existing_pairing_required" else "unavailable")
         result.setdefault("reason", "paired_app_listing_unavailable")
         return result
     matches = set()

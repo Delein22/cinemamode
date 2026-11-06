@@ -140,6 +140,8 @@ async def async_capture_samsung(access: TVAccess | None) -> SamsungCapture:
         terminal = _details(port, "websocket_handshake", "redirect_rejected")
     except WSServerHandshakeError as error:
         terminal = _details(port, "websocket_handshake", "handshake_failed", http_status=error.status)
+        if error.status in (401, 403):
+            capture.authorization = "failed"
     except (ClientConnectorCertificateError, ClientConnectorSSLError):
         terminal = _details(port, "tls", "tls_failed")
     except ClientConnectorError as error:
@@ -151,8 +153,8 @@ async def async_capture_samsung(access: TVAccess | None) -> SamsungCapture:
         terminal = _details(port, phase, "invalid_response")
     except (ClientError, OSError):
         terminal = _details(port, phase, "connection_failed")
-    if capture.authorization == "not_checked":
-        capture.authorization = "failed"
+    # A refused/unreachable socket has not checked the saved authorization.
+    # Only an explicit denial or authorization response establishes failure.
     capture.details = terminal
     if capture.apps is None and not capture.apps_details:
         capture.apps_details = {**terminal, "phase": "app_list" if capture.authorization == "verified" else terminal["phase"]}

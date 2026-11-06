@@ -2,7 +2,7 @@
 
 Benutzerdefinierte Home-Assistant-Integration mit einer eigenen Oberfläche für TV-Steuerung, Streaming-Favoriten und Direktstart-Diagnosen.
 
-**Version 0.2.32 · Beta**
+**Version 0.2.33 · Beta**
 
 ## Installation
 
@@ -40,9 +40,9 @@ Getestete Entwicklungsumgebung: Home Assistant **2026.10.4**. Ältere Versionen 
 ## Direktstart einrichten
 
 1. Den Fernseher einschalten und einen Favoriten mit dem gewünschten Inhaltslink und Abspielverhalten **Fortsetzen** anlegen.
-2. In **Kinosteuerung → Einrichtung → Direktstart einrichten** das Wiedergabeziel und den Favoriten wählen.
+2. In **Kinosteuerung → Einrichtung → Direktstart einrichten** das Wiedergabeziel und den Favoriten wählen. Der Dialog zeigt das tatsächlich gewählte Gerät, seinen Raum und den gemeldeten Zustand; vor dem Start prüfen, ob beispielsweise Büro-Monitor oder Wohnzimmer-TV ausgewählt ist.
 3. **TV prüfen und Titel testen** starten. Dieser Schritt kann die App und den gewählten Titel am TV öffnen.
-4. Falls die Verbindung nicht bestätigt wird, **TV neu verbinden** wählen und gegebenenfalls **Zulassen** am Fernseher bestätigen. Die neue Kopplung wird privat für dieses Ziel gespeichert; die native Samsung-Integration bleibt unverändert.
+4. Ist das Gerät ausgeschaltet oder nicht erreichbar, das ausgewählte Gerät einschalten, die Zuordnung prüfen und **Erneut prüfen** wählen. Dabei wird die vorhandene Verbindung wiederverwendet. Nur wenn eine Gerätefreigabe nötig ist, erscheint **TV neu verbinden**; dann gegebenenfalls **Zulassen** am Fernseher bestätigen. Eine neue Kopplung wird privat für dieses Ziel gespeichert; die native Samsung-Integration bleibt unverändert.
 5. Das tatsächliche Ergebnis melden. Bei einer Profilauswahl Profil und PIN am Fernseher erledigen und danach im Assistenten fortfahren.
 6. Erst **Richtiger Titel läuft** speichert einen lokal bestätigten Startweg. Bei einem anderen Ergebnis kann der nächste passende bekannte Weg gezielt getestet werden.
 
@@ -72,6 +72,8 @@ Für die normale Steuerung zunächst den Fernseher beziehungsweise Zuspieler üb
 Läuft CinemaMode auf demselben Home Assistant wie die Fernseher, bleiben die Optionen für eine andere Home-Assistant-Instanz deaktiviert. URL, Zugriffsschlüssel und zusätzliche Entitätskennungen sind dafür nicht nötig. Für TV-Apps den jeweiligen Fernseher auch als Wiedergabegerät des Raums auswählen.
 
 Bei Samsung in beiden Auswahllisten den Eintrag mit der Anbindung **Samsung Smart TV** verwenden: als **Fernseher** und als **Wiedergabegerät**. Gleich benannte DLNA- oder SmartThings-Einträge sind andere Anbindungen desselben Geräts. Für die Apps direkt auf dem TV bleibt **HDMI-Eingang** leer. Die Anbindung wird neben dem Gerätenamen angezeigt, damit diese Einträge unterscheidbar sind.
+
+Ein neu hinzugefügtes Wiedergabeziel übernimmt zunächst den im Raum ausgewählten Fernseher für **TV-Apps**. Einen externen Player kannst du danach ausdrücklich auswählen. Bereits gespeicherte Wiedergabeziele werden nicht automatisch einem anderen Gerät zugeordnet.
 
 Bei Samsung und anderen Geräten mit Quellenwahl werden die App-Namen aus der aktuellen Quellenliste des ausgewählten Wiedergabegeräts automatisch zugeordnet. Zum Einrichten einer zusätzlichen App-Schaltfläche genügt **Nur App öffnen**; die **App-Zuordnung** bleibt auf **Automatisch erkennen**. Bei mehreren passenden Quellen kann die gewünschte Quelle aus einer Liste gewählt werden. Bereits ausdrücklich eingetragene Zuordnungen bleiben erhalten. Ein ausgeschalteter TV verhindert das Speichern des Raums nicht; die tatsächliche Quelle wird beim App-Aufruf geprüft.
 

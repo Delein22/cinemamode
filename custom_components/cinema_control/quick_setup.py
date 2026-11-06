@@ -33,7 +33,7 @@ _EVIDENCE = {"confirmed_cases": 1, "titles": 1, "source": "user", "situations": 
 _MESSAGES = {
     "ready": "Ein weiterer passender Startweg kann geprüft werden.",
     "running": "Verbindung und Startweg werden geprüft. Bitte das Bild am Fernseher beobachten.",
-    "connection_required": "Die Geräteverbindung ist noch nicht bestätigt. Verbinde den Fernseher erneut und bestätige gegebenenfalls Zulassen am TV.",
+    "connection_required": "Der ausgewählte Fernseher ist noch nicht erreichbar. Prüfe das Gerät und versuche es erneut.",
     "awaiting_result": "Der Titelbefehl wurde gesendet. Läuft der richtige Titel am Fernseher?",
     "awaiting_profile": "Wähle das gewünschte Profil und gib eine PIN bei Bedarf am Fernseher ein. Fahre anschließend hier fort.",
     "uncertain": "Der Ausgang des Aufrufs ist unklar. Prüfe das Bild am TV; es wird kein weiterer Befehl automatisch gesendet.",
@@ -43,6 +43,54 @@ _MESSAGES = {
 }
 _LAUNCH_VALUES = frozenset({"partnervdid", "rrid", "iid", "movieid", "trackid", "source_type_payload",
                             "action_play_url", "action_data", "actiondata", "metatag", "payload"})
+_CONNECTION_PHASES = frozenset({"connect", "tls", "websocket_handshake", "authorization", "app_list", "preview",
+                                "complete", "response", "connection"})
+_CONNECTION_REASONS = frozenset({"connection_refused", "connection_timeout", "connection_failed", "tls_failed",
+    "handshake_failed", "redirect_rejected", "channel_closed", "channel_error", "tv_denied", "tv_authorization_timeout",
+    "authorization_timeout", "tv_protocol_error", "invalid_response", "token_missing", "response_limit",
+    "response_timeout", "server_error", "existing_pairing_required", "invalid_device_access", "event_limit", "complete",
+    "connection_not_completed", "device_off", "device_unavailable"})
+_AUTH_REASONS = frozenset({"tv_denied", "tv_authorization_timeout", "authorization_timeout", "token_missing"})
+
+
+def _connection_details(value: object) -> dict:
+    """Keep fixed connection codes, never arbitrary device or exception strings."""
+    value = value if isinstance(value, dict) else {}
+    verified = value.get("authorization") == "verified"
+    phase, reason = value.get("phase"), value.get("reason")
+    details = {"phase": phase if isinstance(phase, str) and phase in _CONNECTION_PHASES else "complete" if verified else "connection",
+               "reason": reason if isinstance(reason, str) and reason in _CONNECTION_REASONS else "complete" if verified else "connection_not_completed"}
+    for key, lower, upper in (("port", 8001, 8002), ("http_status", 100, 599), ("close_code", 0, 65535)):
+        code = value.get(key)
+        if type(code) is int and lower <= code <= upper:
+            details[key] = code
+    attempts = value.get("attempts")
+    if isinstance(attempts, (list, tuple)) and len(attempts) > 1:
+        details["attempts"] = [_connection_details({key: item[key] for key in
+            ("phase", "reason", "port", "http_status", "close_code") if key in item})
+            for item in attempts[:2] if isinstance(item, dict)]
+    return details
+
+
+def _connection_result(value: object) -> tuple[dict, str, str]:
+    """A failed socket is not evidence that the TV rejected authorization."""
+    details = _connection_details(value)
+    verified = isinstance(value, dict) and value.get("authorization") == "verified"
+    auth_failure = (details["reason"] in _AUTH_REASONS
+                    or details["phase"] == "websocket_handshake" and details.get("http_status") in (401, 403))
+    authorization = "verified" if verified else "failed" if auth_failure else "not_checked"
+    action = "pair" if auth_failure or details["reason"] == "existing_pairing_required" else "retry"
+    return details, authorization, action
+
+
+def _connection_message(reason: str | None, action: str | None) -> str:
+    if reason == "device_off":
+        return "Der ausgewählte Fernseher ist ausgeschaltet. Schalte ihn ein und prüfe die Verbindung erneut."
+    if reason == "device_unavailable":
+        return "Der ausgewählte Fernseher ist in Home Assistant nicht verfügbar. Prüfe das ausgewählte Gerät und seine Verbindung."
+    if action == "pair":
+        return "Die Geräteverbindung benötigt eine Freigabe. Verbinde den Fernseher und bestätige gegebenenfalls Zulassen am TV."
+    return "Der ausgewählte Fernseher hat keine erreichbare Verbindung bestätigt. Prüfe Gerät und Netzwerk und versuche es erneut."
 
 
 def _now() -> str:
@@ -191,7 +239,13 @@ class QuickSetup:
             public["message"] = _MESSAGES[session["state"]]
             public["can_next"] = session["state"] == "ready" and session["next_index"] < len(session["candidates"])
             public["can_record"] = session["state"] in ("awaiting_result", "uncertain")
-            public["can_connect"] = session["state"] == "connection_required"
+            required = session["state"] == "connection_required"
+            public["connection_action"] = session.get("connection_action", "retry") if required else None
+            public["connection_reason"] = session.get("connection_reason") if required else None
+            public["can_connect"] = required and public["connection_action"] == "pair"
+            public["can_retry"] = required and public["connection_action"] == "retry"
+            if required:
+                public["message"] = _connection_message(public["connection_reason"], public["connection_action"])
             public["can_continue_profile"] = session["state"] == "awaiting_profile"
             report = deepcopy(self._reports.get(key + (session["app"],)))
             if report is not None:
@@ -199,6 +253,7 @@ class QuickSetup:
                     "state": session["state"], "scope": "local_device", "confirmed_cases": int(session["state"] == "saved"),
                     "titles": int(session["state"] == "saved"), "situations": int(session["state"] == "saved"),
                     "establishes_family_compatibility": False,
+                    "connection_action": public["connection_action"], "connection_reason": public["connection_reason"],
                     "attempts": [{name: attempt[name] for name in ("adapter_id", "state", "error_code", "outcome", "evidence_level") if name in attempt}
                                  for attempt in session["attempts"]],
                 }
@@ -213,7 +268,7 @@ class QuickSetup:
             raise CinemaError("Diese Einrichtung ist nicht mehr aktuell. Bitte erneut öffnen.", "stale_session")
         return current
 
-    def _validate(self, room: dict, target: dict, session: dict) -> dict:
+    def _validate_context(self, room: dict, target: dict, session: dict) -> dict:
         if (self._closed or self.manager.closed or self._sessions.get(_scope(room, target)) is not session
                 or session["state"] == "cancelled" or session["id"] in self._cancelled_ids):
             raise CinemaError("Die Einrichtung wurde beendet oder ersetzt.", "stale_session")
@@ -228,13 +283,18 @@ class QuickSetup:
         fields = ("provider", "url", "playback", "prime_auto_profile", "prime_auto_continue")
         if favorite is None or any(favorite.get(name) != original.get(name) for name in fields):
             raise CinemaError("Der Favorit wurde geändert. Bitte die Einrichtung neu starten.", "stale_session")
+        return favorite
+
+    def _validate(self, room: dict, target: dict, session: dict) -> dict:
+        favorite = self._validate_context(room, target, session)
+        current_room, current_target = self.manager.resolve(room["id"], target["id"])
         identity, signature = _identity(self.manager._assistant_identity(current_room, current_target, session["app"]), session["app"])
         if identity != session["identity"] or signature != session["binding_signature"]:
             raise CinemaError("Geräteverbindung oder Version wurden geändert. Bitte erneut prüfen.", "stale_device")
         return favorite
 
     async def async_action(self, room: dict, target: dict, action: str, data: dict, context) -> dict:
-        fields = {"status": set(), "begin": {"favorite_id", "session_id"}, "connect": {"session_id"}, "next": {"session_id"},
+        fields = {"status": set(), "begin": {"favorite_id", "session_id"}, "connect": {"session_id"}, "retry": {"session_id"}, "next": {"session_id"},
                   "record": {"session_id", "outcome"}, "continue_profile": {"session_id"}, "cancel": {"session_id"}}
         if self._closed or not isinstance(action, str) or action not in fields or not isinstance(data, dict) or set(data) - fields[action]:
             raise CinemaError("Ungültige Angabe zur schnellen Einrichtung.", "invalid_quick_setup")
@@ -263,9 +323,20 @@ class QuickSetup:
                     await self._begin(room, target, data.get("favorite_id"), context, data.get("session_id"))
                 else:
                     session = self._session(room, target, data.get("session_id"))
-                    if action == "connect":
-                        if session["state"] != "connection_required":
+                    if action == "retry":
+                        self._validate_context(room, target, session)
+                        if session["state"] != "connection_required" or session.get("connection_action") != "retry":
+                            raise CinemaError("Eine erneute Verbindungsprüfung ist hier nicht erforderlich.", "invalid_quick_setup")
+                        self._sessions.pop(key, None)
+                        await self._begin(room, target, session["favorite_id"], context, session["id"], allow_pairing=False)
+                    elif action == "connect":
+                        self._validate_context(room, target, session)
+                        if session["state"] != "connection_required" or session.get("connection_action") != "pair":
                             raise CinemaError("Eine neue TV-Verbindung ist hier nicht erforderlich.", "invalid_quick_setup")
+                        readiness = self._device_readiness(target)
+                        if readiness is not None:
+                            self._connection_failure(room, target, session, CinemaError("Gerät nicht bereit.", readiness))
+                            return self._status(room, target)
                         try:
                             await self.manager.async_quick_pair(room, target, force=True)
                         except (CinemaError, TimeoutError) as error:
@@ -274,7 +345,7 @@ class QuickSetup:
                             if self._sessions.get(key) is not session or session["state"] == "cancelled":
                                 raise CinemaError("Die Einrichtung wurde beendet.", "stale_session")
                             self._sessions.pop(key, None)
-                            await self._begin(room, target, session["favorite_id"], context, session["id"])
+                            await self._begin(room, target, session["favorite_id"], context, session["id"], allow_pairing=False)
                     elif action == "next":
                         self._validate(room, target, session)
                         if session["state"] != "ready":
@@ -310,7 +381,22 @@ class QuickSetup:
                     self._active.pop(key, None)
             return self._status(room, target)
 
-    async def _begin(self, room: dict, target: dict, favorite_id: object, context, session_id: object = None) -> None:
+    def _device_readiness(self, target: dict) -> str | None:
+        """Use available HA state only; never wake or contact a known-off TV."""
+        states = getattr(self.manager.hass, "states", None)
+        get_state = getattr(states, "get", None)
+        if not callable(get_state):
+            return None
+        state = get_state(target["entity_id"])
+        value = getattr(state, "state", None)
+        if value in ("off", "standby"):
+            return "device_off"
+        if state is None or value in ("unknown", "unavailable"):
+            return "device_unavailable"
+        return None
+
+    async def _begin(self, room: dict, target: dict, favorite_id: object, context, session_id: object = None, *,
+                     allow_pairing: bool = True) -> None:
         from .launch_adapters import adapter_options
 
         if self.manager.tasks or self.manager._control_lock.locked() or self.manager._diagnostic_lock.locked():
@@ -334,12 +420,16 @@ class QuickSetup:
         session = {"id": session_id or uuid4().hex, "state": "running", "app": favorite["provider"], "favorite_id": record_id(favorite["id"]),
                    "favorite": deepcopy(favorite), "created_at": _now(), "attempts": [], "candidates": [], "next_index": 0}
         self._sessions[key] = session
+        readiness = self._device_readiness(target)
+        if readiness is not None:
+            self._connection_failure(room, target, session, CinemaError("Gerät nicht bereit.", readiness))
+            return
         pairing_error = None
         try:
             if self.manager.platform(target["entity_id"]) == "samsungtv":
                 access = self.manager.device_access.resolve(self.manager, room, target)
                 bridge_available = _has_netflix_bridge(adapter_options(self.manager, room, target, session["app"]), session["app"])
-                if (access is None or access.pairing is None) and not bridge_available:
+                if allow_pairing and (access is None or access.pairing is None) and not bridge_available:
                     try:
                         await self.manager.async_quick_pair(room, target, force=False)
                     except (CinemaError, TimeoutError) as error:
@@ -352,11 +442,12 @@ class QuickSetup:
             return
         if self._sessions.get(key) is not session or session["state"] == "cancelled" or session["id"] in self._cancelled_ids:
             raise CinemaError("Diese Einrichtung wurde beendet.", "stale_session")
+        details, authorization, _action = _connection_result(report.get("connection"))
+        report = {**report, "connection": {"authorization": authorization, **details}}
         safe = _report(report)
         self._reports[key + (session["app"],)] = safe
         session["identity"], session["binding_signature"] = _identity(
             {**safe, "binding_signature": self.manager.device_access.signature(room, target)}, session["app"])
-        authorization = report.get("connection", {}).get("authorization")
         paired_response = any(check.get("status") == "available" and check.get("id") in
                               ("smart_hub_preview", "standard_app_listing") for check in report.get("checks", []))
         available, skipped = _available_routes(adapter_options(self.manager, room, target, session["app"]), report,
@@ -368,7 +459,7 @@ class QuickSetup:
             if pairing_error is not None:
                 self._connection_failure(room, target, session, pairing_error)
             else:
-                session["state"] = "connection_required"
+                self._set_connection_required(room, target, session, report["connection"])
             return
         identity = self.manager._assistant_identity(room, target, session["app"])
         selector = getattr(self.manager, "_selected_start_profile", None)
@@ -386,12 +477,19 @@ class QuickSetup:
 
     def _connection_failure(self, room: dict, target: dict, session: dict, error: Exception) -> None:
         """Keep validated pairing phases; never serialize exception text or requests."""
+        if isinstance(error, SamsungPairingError):
+            details = error.safe_details()
+        else:
+            reason = error.code if isinstance(error, CinemaError) and error.code in ("device_off", "device_unavailable") else "connection_not_completed"
+            details = {"phase": "connection", "reason": reason}
+        self._set_connection_required(room, target, session, details)
+
+    def _set_connection_required(self, room: dict, target: dict, session: dict, value: object) -> None:
         key = _scope(room, target)
         if (self._sessions.get(key) is not session or session["state"] == "cancelled"
                 or session["id"] in self._cancelled_ids):
             raise CinemaError("Die Einrichtung wurde beendet.", "stale_session")
-        details = (error.safe_details() if isinstance(error, SamsungPairingError)
-                   else {"phase": "connection", "reason": "connection_not_completed"})
+        details, authorization, action = _connection_result(value)
         report = deepcopy(self._reports.get(key + (session["app"],)))
         if report is None:
             report = {"schema_version": 2, "mode": "passive", "integration_version": VERSION,
@@ -399,12 +497,12 @@ class QuickSetup:
                       "app": {"id": session["app"], "provider": session["app"]},
                       "fingerprint": sha256(("unverified|" + self.manager.device_access.signature(room, target)
                                              + "|" + session["app"]).encode()).hexdigest(), "checks": []}
-        report["connection"] = {"authorization": "failed", **details}
+        report["connection"] = {"authorization": authorization, **details}
         report["checks"] = [check for check in report.get("checks", [])
                             if isinstance(check, dict) and check.get("id") != "quick_connection"][-31:]
         report["checks"].append({"id": "quick_connection", "status": "unavailable", **details})
         self._reports[key + (session["app"],)] = _report(report)
-        session["state"] = "connection_required"
+        session.update(state="connection_required", connection_action=action, connection_reason=details["reason"])
 
     async def _try_next(self, room: dict, target: dict, session: dict, context) -> None:
         from .launch_adapters import dispatch

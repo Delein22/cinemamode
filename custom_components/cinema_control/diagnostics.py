@@ -377,7 +377,7 @@ async def _samsung_preview(session, host, pairing, name, report: dict, *,
         except (ValueError, TypeError, RecursionError):
             details.update(phase="preview", reason="invalid_response")
     _record_check(report, {"id": "smart_hub_preview",
-                          "status": "skipped" if capture.authorization == "not_checked" else "unavailable",
+                          "status": "skipped" if details.get("reason") == "existing_pairing_required" else "unavailable",
                           **details})
 
 
