@@ -24,10 +24,13 @@ _OUTCOMES = frozenset({"playing", "profile_selection", "app_only", "title_page",
 _SAFE_BEFORE_SEND = frozenset({"unsupported_adapter", "start_format_unknown", "netflix_start_format_unknown",
                               "unsupported_content", "invalid_content", "app_source_unavailable",
                               "app_source_ambiguous", "profile_required", "samsung_youtube_pairing",
-                              "dial_not_supported", "dial_unavailable"})
+                              "dial_not_supported", "dial_unavailable", "zuhause_not_available",
+                              "zuhause_version_unsupported", "zuhause_pairing_required", "zuhause_invalid_content",
+                              "zuhause_unavailable"})
 _PUBLIC_ERRORS = _SAFE_BEFORE_SEND | {"busy", "start_outcome_unknown", "start_failed", "transport_unavailable",
                                     "netflix_start_unavailable", "netflix_start_rejected", "not_found", "invalid",
-                                    "profile_timeout", "profile_not_confirmed", "dial_start_rejected", "dial_start_unknown"}
+                                    "profile_timeout", "profile_not_confirmed", "dial_start_rejected", "dial_start_unknown",
+                                    "zuhause_start_unknown"}
 _EVIDENCE = {"confirmed_cases": 1, "titles": 1, "source": "user", "situations": 1,
              "establishes_family_compatibility": False}
 _MESSAGES = {
@@ -125,12 +128,17 @@ def _available_routes(options: list[dict], report: dict, platform: str, app: str
     dial_observed = (report.get("identity_match") is not False and any(
         check.get("id") == "samsung_app_status" and check.get("app") == "netflix"
         and check.get("protocol") == "dial" and check.get("status") == "available" for check in checks))
+    zuhause_observed = (platform == "samsungtv" and app == "netflix" and report.get("identity_match") is not False
+                        and any(check.get("id") == "zuhause_bridge" and check.get("status") == "available"
+                                for check in checks))
     available, skipped = [], []
     for option in options:
         if not option.get("can_test"):
             continue
         reason = None
-        if option["id"] == "samsung_dial_netflix" and not dial_observed:
+        if option["id"] == "samsung_zuhause" and not zuhause_observed:
+            reason = "zuhause_not_observed"
+        elif option["id"] == "samsung_dial_netflix" and not dial_observed:
             reason = "service_not_observed"
         elif (platform == "samsungtv" and preview_unavailable
               and (option["id"] == "samsung_ws" or option["id"] == "existing" and option.get("requires_preview") is True)):
@@ -468,10 +476,10 @@ class QuickSetup:
         else:
             confirmed = self.manager.start_assistant.matching_profile(room, target, session["app"], identity)
             preferred = confirmed or self.matching_profile(room, target, session["app"], identity)
-        ordered = ([preferred["adapter_id"]] if preferred else []) + ["existing", "samsung_ws", "samsung_dial_netflix", "android_url", "webos_app"]
+        ordered = ([preferred["adapter_id"]] if preferred else []) + ["samsung_zuhause", "existing", "samsung_ws", "samsung_dial_netflix", "android_url", "webos_app"]
         by_id = {item["id"]: item for item in available}
         for adapter_id in dict.fromkeys(ordered):
-            if adapter_id in by_id and len(session["candidates"]) < 3:
+            if adapter_id in by_id and len(session["candidates"]) < 4:
                 session["candidates"].append({"id": adapter_id, "label": by_id[adapter_id]["label"]})
         await self._try_next(room, target, session, context)
 

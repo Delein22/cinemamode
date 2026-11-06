@@ -2,7 +2,7 @@
 
 Benutzerdefinierte Home-Assistant-Integration mit einer eigenen Oberfläche für TV-Steuerung, Streaming-Favoriten und Direktstart-Diagnosen.
 
-**Version 0.2.33 · Beta**
+**Version 0.2.34 · Beta**
 
 ## Installation
 
@@ -51,6 +51,12 @@ Ein angenommener Befehl oder HTTP-Erfolg bestätigt noch keine Wiedergabe. Der e
 Bei unklarem Ausgang nach einem gesendeten Befehl startet der Assistent keine weiteren Versuche automatisch. Ein Diagnosebericht lässt sich bei Bedarf herunterladen; Zugangsdaten und rohe Vorschauwerte werden nicht exportiert.
 
 Bei Samsung kann die Anmeldung erfolgreich sein, obwohl die Firmware weder eine App-Liste noch die Home-Vorschau liefert. Die Einrichtung prüft dann unabhängige HTTP-Dienste. Antwortet der Netflix-DIAL-Dienst mit einem passenden App-Status, steht zusätzlich **Netflix · DIAL-Inhaltsaufruf** als experimenteller Titelstartweg bereit. Er benötigt keine Vorschaukachel. Das verwendete Netflix-Titelformat ist im [DIAL-Service von ConnectSDK](https://github.com/ConnectSDK/Connect-SDK-Android-Core/blob/master/src/com/connectsdk/service/DIALService.java) beschrieben; ob die jeweilige Netflix-App es unterstützt, wird am Gerät geprüft. Erst die Bestätigung des tatsächlich laufenden Titels speichert diesen Weg für spätere Favoritenstarts.
+
+### Optional: Netflix über Zuhause
+
+Ist auf dem gewählten Samsung die Zuhause-App ab **1.4.14** installiert, erkennt die Diagnose ihre Version über die lokale Geräte-API. **Direktstart einrichten** prüft dann bevorzugt **Über Zuhause (experimentell)**, sofern noch kein anderer bestätigter Startweg ausgewählt ist. Dieser Weg benötigt keine Samsung-Vorschaukacheln. Er übergibt den Netflix-Link einmalig an Zuhause; die App versucht anschließend die native Tizen-Übergabe an Netflix.
+
+Erst **Richtiger Titel läuft** speichert diesen Weg für spätere Favoritenaufrufe. Eine erreichbare Zuhause-App oder ein gesendeter Auftrag bestätigt noch keinen funktionierenden Netflix-Titelstart. Die Wiedergabe auf dem Monitor ist noch nicht bestätigt. Profilauswahl und PIN bleiben bei diesem Versuch am Gerät; ein Start ab 0:00 wird nicht zugesichert. Für diesen Weg sind keine zusätzlichen YAML-Aktionen erforderlich. Er gilt ausschließlich für Netflix auf dem geprüften Gerät mit Zuhause und wird nicht als allgemeine Tizen-Kompatibilität gewertet.
 
 ## Standarddiagnose ohne Titelstart
 

@@ -22,7 +22,7 @@ from .models import CinemaError, content_url
 from .samsung_disney import disney_title_id
 from .samsung_youtube import _remote_url, samsung_youtube_trace_config, youtube_video_id
 
-ADAPTER_IDS = frozenset({"existing", "samsung_ws", "samsung_dial_netflix", "android_url", "webos_app"})
+ADAPTER_IDS = frozenset({"existing", "samsung_ws", "samsung_dial_netflix", "samsung_zuhause", "android_url", "webos_app"})
 _PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)+")
 _WEBOS_APPS = {"netflix": "netflix", "youtube": "youtube.leanback.v4", "disney": "com.disney.disneyplus-prod",
                "prime": "amazon", "plex": "cdp-30", "apple": "com.apple.appletv"}
@@ -57,6 +57,8 @@ def adapter_options(manager, room: dict, target: dict, app: str) -> list[dict]:
         result.append({"id":"samsung_ws", "label":"Samsung · aktuelle Vorschau", "can_test":bool(access and access.pairing),
                        "reason":"Benötigt eine erreichbare, gekoppelte Geräteverbindung und passende aktuelle Vorschau-Daten."})
         if provider == "netflix":
+            result.append({"id":"samsung_zuhause", "label":"Über Zuhause (experimentell)", "can_test":bool(access and access.pairing and target.get("profile") == "samsungtv"),
+                           "reason":"Benötigt die bereits installierte Zuhause-App ab 1.4.14. Ein Titelstart muss am TV bestätigt werden."})
             result.append({"id":"samsung_dial_netflix", "label":"Netflix · DIAL-Inhaltsaufruf", "can_test":access is not None,
                            "reason":"Prüft den Netflix-Dienst direkt per HTTP. Funktioniert unabhängig von der Home-Vorschau; Titelstart muss am TV bestätigt werden."})
     elif platform in ("androidtv", "androidtv_remote"):
@@ -245,6 +247,25 @@ async def dispatch(manager, room: dict, target: dict, favorite: dict, adapter_id
             raise CinemaError("Der vorhandene Startweg ist fehlgeschlagen.", "start_failed")
     elif adapter_id == "samsung_ws":
         await _samsung_dispatch(manager, room, target, favorite)
+    elif adapter_id == "samsung_zuhause":
+        from .samsung_zuhause import async_launch_zuhause_netflix
+
+        access = manager.device_access.resolve(manager, room, target)
+        signature = manager.device_access.signature(room, target)
+        profile, television = target.get("profile"), room.get("tv_entity_id")
+
+        def validate():
+            current_room, current_target = manager.resolve(room["id"], target["id"])
+            if (current_target["entity_id"] != player
+                    or current_target.get("profile") != profile
+                    or current_room.get("tv_entity_id") != television
+                    or manager.platform(player) != "samsungtv"
+                    or manager.device_access.signature(current_room, current_target) != signature
+                    or manager.device_access.resolve(manager, current_room, current_target) != access):
+                raise CinemaError("Die Geräteverbindung wurde geändert. Bitte erneut prüfen.", "stale_device")
+            manager._check_prepared(current_room, current_target)
+
+        await async_launch_zuhause_netflix(access, favorite["url"], validate)
     elif adapter_id == "samsung_dial_netflix":
         from .samsung_dial import async_launch_netflix_dial
 

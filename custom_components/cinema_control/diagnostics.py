@@ -19,6 +19,7 @@ from .models import CinemaError
 from .device_access import AccessSource, TVAccess
 from .samsung_capture import SamsungCapture, async_capture_samsung
 from .samsung_http_probe import async_probe_samsung_apps, parse_dial_service
+from .samsung_zuhause import async_probe_zuhause
 from .samsung_youtube import (
     SAMSUNG_DEFAULT_CLIENT_NAME, samsung_youtube_pairing, samsung_youtube_trace_config,
 )
@@ -68,7 +69,7 @@ _PUBLIC_CONSTANTS = {"module": {"LaunchHelper"}, "func": {"deeplink", "native", 
                      "distributionPartner": {"samsung"}}
 _CHECK_SOURCES = {"samsung_device_api": "samsung_http_api", "dial_discovery": "dial_discovery",
                   "smart_hub_preview": "samsung_eden", "samsung_app_status": "samsung_http_app_status",
-                  "manufacturer_protocol": "integration_capabilities"}
+                  "manufacturer_protocol": "integration_capabilities", "zuhause_bridge": "zuhause_http_app_status"}
 
 
 def _record_check(report: dict, check: dict) -> None:
@@ -86,7 +87,7 @@ def _record_check(report: dict, check: dict) -> None:
               (check["id"] == "smart_hub_preview" and check.get("reason") == "response_timeout"
                and report.get("connection", {}).get("authorization") == "verified")):
             level = "access_blocked"
-    elif check["id"] == "samsung_app_status" and check["status"] == "available":
+    elif check["id"] in ("samsung_app_status", "zuhause_bridge") and check["status"] == "available":
         level = "service_detected"
     check["evidence_level"] = level
     report["checks"].append(check)
@@ -381,6 +382,11 @@ async def _samsung_preview(session, host, pairing, name, report: dict, *,
                           **details})
 
 
+async def _samsung_zuhause(host, pairing, name, report: dict) -> None:
+    check = await async_probe_zuhause(TVAccess(host, pairing, name, AccessSource.NATIVE))
+    _record_check(report, {**check, "scope": "device_all_apps"})
+
+
 def _candidates(report: dict, provider: str | None) -> list[dict]:
     candidate = {
         "samsungtv": "samsung_smart_hub_preview", "webostv": "webos_application_launch",
@@ -393,6 +399,11 @@ def _candidates(report: dict, provider: str | None) -> list[dict]:
                        "scope": "device_protocol", "evidence_level": report.get("evidence_level", "not_checked"), "playback_verified": False})
     if provider and report["capabilities"].get(provider + "_title"):
         result.append({"id": "configured_" + provider + "_route", "status": "configured", "playback_verified": False})
+    if report["platform"] == "samsungtv" and provider == "netflix" and any(
+            check.get("id") == "zuhause_bridge" and check.get("status") == "available" for check in report["checks"]):
+        result.append({"id": "samsung_zuhause", "app": "netflix", "status": "candidate",
+                       "scope": "device_protocol", "evidence_level": "service_detected",
+                       "playback_verified": False, "requires_title_test": True})
     if report["platform"] == "samsungtv" and provider == "netflix" and any(
             check.get("id") == "samsung_app_status" and check.get("app") == "netflix"
             and check.get("protocol") == "dial" and check.get("status") == "available"
@@ -416,6 +427,9 @@ def _adapter_descriptors(platform: str) -> list[dict]:
     result = [{"id": descriptor[0], "protocol": descriptor[1], "passive_capture_implemented": descriptor[2],
                "protocol_candidate_only": True, "executable": False, "requires_per_app_confirmation": True}]
     if platform == "samsungtv":
+        result.append({"id": "samsung_zuhause", "app": "netflix", "protocol": "zuhause_content_v1",
+                       "passive_capture_implemented": True, "protocol_candidate_only": True,
+                       "executable": False, "requires_per_app_confirmation": True})
         result.append({"id": "samsung_dial_netflix", "app": "netflix", "protocol": "dial_json_content",
                        "passive_capture_implemented": True, "protocol_candidate_only": True,
                        "executable": False, "requires_per_app_confirmation": True})
@@ -459,12 +473,12 @@ def _technical_values(report: dict) -> dict:
             result[group + "." + name] = values.get(name)
     checks = report.get("checks")
     checks = checks if isinstance(checks, list) else []
-    for check_id in ("device_metadata", "samsung_device_api", "dial_discovery", "smart_hub_preview", "standard_app_listing", "samsung_app_status", "manufacturer_protocol", "collection"):
+    for check_id in ("device_metadata", "samsung_device_api", "dial_discovery", "smart_hub_preview", "standard_app_listing", "samsung_app_status", "zuhause_bridge", "manufacturer_protocol", "collection"):
         values = []
         for check in checks:
             if not isinstance(check, dict) or check.get("id") != check_id:
                 continue
-            value = {key: check.get(key) for key in ("status", "reason", "phase", "app", "app_id", "protocol", "state", "port", "http_status", "close_code", "application_service", "evidence_level", "templates", "templates_truncated", "known_app_ids", "known_constants", "query_keys", "identity_match", "firmware_disagreement") if key in check}
+            value = {key: check.get(key) for key in ("status", "reason", "phase", "app", "app_id", "app_version", "protocol", "state", "port", "http_status", "close_code", "application_service", "evidence_level", "templates", "templates_truncated", "known_app_ids", "known_constants", "query_keys", "identity_match", "firmware_disagreement") if key in check}
             capture = check.get("capture")
             value["capture_source"] = capture.get("source") if isinstance(capture, dict) else check.get("source")
             shapes = check.get("field_shapes")
@@ -539,6 +553,8 @@ async def async_collect_diagnostics(manager, room: dict, target: dict, app: str,
                     async with ClientSession(timeout=ClientTimeout(total=10), trust_env=False,
                                              trace_configs=[samsung_youtube_trace_config()]) as session:
                         tasks = [_samsung_http(session, host, report)]
+                        if provider == "netflix":
+                            tasks.append(_samsung_zuhause(host, pairing, name, report))
                         if pairing is not None:
                             tasks.append(_samsung_preview(session, host, pairing, name, report,
                                                           capture=samsung_capture, capture_sink=capture_sink))
@@ -571,5 +587,8 @@ async def async_collect_diagnostics(manager, room: dict, target: dict, app: str,
                    "app": provider or (public_app.casefold() if public_app else None),
                    "app_version": report["app"]["version"], "app_version_source": report["app"]["version_source"],
                    "reported_firmware": report["reported"]["firmware"]}
+    for check in report["checks"]:
+        if provider == "netflix" and check["id"] == "zuhause_bridge" and check["status"] == "available":
+            fingerprint["zuhause_bridge"] = {key: check.get(key) for key in ("status", "app_version")}
     report["fingerprint"] = sha256(json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return report
