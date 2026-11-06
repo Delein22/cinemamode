@@ -1,10 +1,10 @@
 /* Local native web component. No build step, CDN, tracking or bundled framework. */
-import {appArtwork} from "./app-catalog.js?v=0.2.31";
+import {appArtwork} from "./app-catalog.js?v=0.2.32";
 
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const id = () => crypto.randomUUID().replaceAll("-", "");
-const appLabels = {netflix:"Netflix", disney:"Disney+", prime:"Prime Video", apple:"Apple TV+", youtube:"YouTube"};
-const labels = {...appLabels, plex:"Plex"};
+const appLabels = {netflix:"Netflix", disney:"Disney+", prime:"Prime Video", apple:"Apple TV+", youtube:"YouTube", plex:"Plex"};
+const labels = {...appLabels};
 const diagnosticObservations = {not_tested:"Nicht getestet",app_only:"Nur App-Startseite",profile_selection:"Profilauswahl",title_page:"Titelseite",playing:"Titel läuft",failed:"Fehlgeschlagen"};
 const assistantOutcomes = {...diagnosticObservations,playing:"Der richtige Titel läuft",wrong_title:"Ein anderer Titel läuft"};
 const assistantScenarios = {app_open:{label:"App geöffnet",instruction:"Öffne die App, wähle dein Profil und lass ihre Startseite offen."},app_closed:{label:"App geschlossen",instruction:"Schließe die App und gehe zum Home-Bildschirm des Fernsehers."},profile_selection:{label:"Profilauswahl",instruction:"Öffne die App bis zur Profilauswahl und lass diese Auswahl stehen."}};
@@ -37,7 +37,7 @@ export class CinemaControlPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({mode:"open"});
-    this.shadowRoot.innerHTML = `<link rel="stylesheet" href="/cinema_control_static/cinema-panel.css?v=0.2.31"><div id="screen"></div><dialog aria-labelledby="dialog-title"><div id="form"></div></dialog><div id="notice" role="status" aria-live="polite"></div>`;
+    this.shadowRoot.innerHTML = `<link rel="stylesheet" href="/cinema_control_static/cinema-panel.css?v=0.2.32"><div id="screen"></div><dialog aria-labelledby="dialog-title"><div id="form"></div></dialog><div id="notice" role="status" aria-live="polite"></div>`;
     this.view = "favorites";
     this.query = "";
     this.filter = "";
@@ -646,14 +646,15 @@ export class CinemaControlPanel extends HTMLElement {
   }
 
   _httpAppStatusSummary(report) {
+    const diagnosticLabels = {...labels,magenta:"MagentaTV",rtl:"RTL+"};
     const checks = Array.isArray(report?.checks) ? report.checks.filter(check => check?.id === "samsung_app_status"
-      && Object.hasOwn(labels,check.app) && ["rest","dial"].includes(check.protocol)
+      && Object.hasOwn(diagnosticLabels,check.app) && ["rest","dial"].includes(check.protocol)
       && ["available","unavailable","not_supported"].includes(check.status)).slice(0,12) : [];
     if (!checks.length) return "";
     const summary = check => check.status === "available"
       ? ({running:"App erreichbar · läuft",stopped:"App erreichbar · beendet",unknown:"App-Dienst erreichbar"}[check.state] || "App-Dienst erreichbar")
       : check.status === "not_supported" ? "Keine unterstützte Antwort" : "Keine verwertbare Antwort";
-    return `<div class="diagnostic-http"><h3>Zusätzliche App-Abfragen per HTTP</h3><p class="small muted">Diese Prüfungen benötigen keine Home-Vorschau und starten keine App.</p><ul class="standard-results" aria-label="Unabhängige HTTP-App-Abfragen">${checks.map(check=>`<li><strong>${esc(labels[check.app])} · ${check.protocol === "dial" ? "DIAL" : "REST"}</strong><span>${summary(check)}</span></li>`).join("")}</ul><p class="small muted">Ein erreichbarer App-Dienst bestätigt noch keinen Titelstart.</p></div>`;
+    return `<div class="diagnostic-http"><h3>Zusätzliche App-Abfragen per HTTP</h3><p class="small muted">Diese Prüfungen benötigen keine Home-Vorschau und starten keine App.</p><ul class="standard-results" aria-label="Unabhängige HTTP-App-Abfragen">${checks.map(check=>`<li><strong>${esc(diagnosticLabels[check.app])} · ${check.protocol === "dial" ? "DIAL" : "REST"}</strong><span>${summary(check)}</span></li>`).join("")}</ul><p class="small muted">Ein erreichbarer App-Dienst bestätigt noch keinen Titelstart.</p></div>`;
   }
 
   async _collectStandardDiagnostic() {
@@ -1091,7 +1092,8 @@ export class CinemaControlPanel extends HTMLElement {
   }
 
   _entityOptions(domain, selected, optional = false) {
-    return `${optional ? '<option value="">Keine Fernbedienung</option>' : '<option value="">Bitte wählen</option>'}${this.data.entities.filter(e=>e.entity_id.startsWith(domain+".")).map(e=>`<option value="${esc(e.entity_id)}" ${e.entity_id===selected?"selected":""}>${esc(e.name)} · ${esc(states[e.state] || e.state)}</option>`).join("")}`;
+    const platformNames = {samsungtv:"Samsung Smart TV",dlna_dmr:"DLNA-Medienwiedergabe",smartthings:"Samsung SmartThings",androidtv:"Android TV · ADB",androidtv_remote:"Android TV Remote",webostv:"LG webOS",cast:"Google Cast",apple_tv:"Apple TV",roku:"Roku"};
+    return `${optional ? '<option value="">Keine Fernbedienung</option>' : '<option value="">Bitte wählen</option>'}${this.data.entities.filter(e=>e.entity_id.startsWith(domain+".")).map(e=>`<option value="${esc(e.entity_id)}" ${e.entity_id===selected?"selected":""}>${esc(e.name)} · ${esc(platformNames[e.platform] || e.platform || "Anbindung unbekannt")} · ${esc(states[e.state] || e.state)}</option>`).join("")}`;
   }
 
   _roomForm(room = null) {
@@ -1106,11 +1108,12 @@ export class CinemaControlPanel extends HTMLElement {
           <label>Fernseher<select name="tv_entity_id" id="draft-tv" required>${this._entityOptions("media_player",room?.tv_entity_id)}</select></label>
         </div>
         <p class="small muted">Dieser Fernseher regelt die Lautstärke und den Eingang.</p>
+        ${this.data.entities.some(entity=>entity.platform === "samsungtv") ? `<p class="small muted">Für Apps auf einem Samsung-Gerät wähle die Anbindung „Samsung Smart TV“. Gleich benannte DLNA- oder SmartThings-Einträge verwenden eine andere Geräteanbindung.</p>` : ""}
       </section>
       <section class="form-section">
         <p class="section-kicker">02 · Wiedergabeziele</p>
         <div class="section-head"><h3>Fernseher und Zuspieler</h3><button type="button" data-op="target-add">${icon("plus")} Ziel hinzufügen</button></div>
-        <p class="small muted">Für TV-Apps wähle den Fernseher als Wiedergabegerät. Einen externen Zuspieler ordnest du seinem HDMI-Eingang zu.</p>
+        <p class="small muted">Für TV-Apps wähle hier denselben Fernseher als Wiedergabegerät und lass HDMI leer. Einen externen Zuspieler ordnest du seinem HDMI-Eingang zu.</p>
         <div id="targets-form">${this.roomDraft.targets.map(t=>this._targetForm(t)).join("")}</div>
       </section>
       <details class="form-section advanced-settings">
@@ -1141,6 +1144,7 @@ export class CinemaControlPanel extends HTMLElement {
         <label>Name<input name="target_name" value="${esc(target.name)}" required maxlength="160"></label>
         <label>Wiedergabegerät<select name="entity_id" required>${this._entityOptions("media_player",target.entity_id)}</select></label>
       </div>
+      ${ent?.platform === "dlna_dmr" ? `<p class="small muted">Dieses Ziel verwendet DLNA für Medienwiedergabe. Für lokale Samsung-Apps wähle den Eintrag mit „Samsung Smart TV“.</p>` : ent?.platform === "smartthings" ? `<p class="small muted">Dieses Ziel verwendet SmartThings. Für die lokalen Samsung-Appstarts wähle den Eintrag mit „Samsung Smart TV“.</p>` : ""}
       <details class="advanced-settings">
         <summary>Erweiterte Geräteoptionen</summary>
         <div class="form-grid">
@@ -1195,6 +1199,7 @@ export class CinemaControlPanel extends HTMLElement {
       : unreadable ? "Die Quellenliste ist derzeit nicht auswertbar. Du kannst speichern und die Geräteverbindung vor dem Appstart prüfen."
       : matches.length === 1 ? `Zugeordnet: ${matches[0]}. Der aktuelle Name wird beim Appstart vom gewählten Gerät übernommen.`
       : matches.length > 1 ? "Mehrere passende Quellen werden gemeldet. Wähle hier die gewünschte Quelle aus."
+      : this.entity(target.entity_id)?.platform === "samsungtv" ? "Noch keine passende Quelle gemeldet. Beim Öffnen wird der Samsung-Appdienst geprüft."
       : "Noch keine passende Quelle gemeldet. Du kannst speichern und den Fernseher vor dem Appstart einschalten.";
     const hintId = `source-hint-${target.id}-${provider}`;
     return `<label>App-Zuordnung<select name="app_id" data-source-choice aria-describedby="${esc(hintId)}"><option value="" ${!selected ? "selected" : ""}>${esc(automatic)}</option>${selected && !sources.includes(selected) ? `<option value="${esc(selected)}" selected>${esc(selected)} · gespeichert, derzeit nicht gemeldet</option>` : ""}${sources.map(source=>`<option value="${esc(source)}" ${source===selected ? "selected" : ""}>${esc(source)}</option>`).join("")}</select><span id="${esc(hintId)}" class="small muted" data-source-status role="status">${esc(message)}</span></label>`;

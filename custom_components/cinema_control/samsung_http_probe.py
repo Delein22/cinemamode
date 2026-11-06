@@ -19,14 +19,19 @@ _LAN = tuple(map(IPv4Network, ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
 _MAX_BODY = 32 * 1024
 _DIAL_NAMES = {"netflix": "Netflix", "youtube": "YouTube"}
 _DIAL_ROUTES = {"ws_app": "/ws/app/", "ws_apps": "/ws/apps/", "apps": "/apps/"}
-# Public identifiers already observed by the integration's Samsung capture.
+# Public REST identifiers and firmware variants documented by samsung-tv-ws-api.
+# https://github.com/xchwarze/samsung-tv-ws-api/blob/master/APPLICATIONS.md
+# SmartThings IDs (for example org.tizen.ignition) are not REST app identifiers.
 # Failure to find one is not proof that an app is absent on another model.
 _REST_APPS = {
-    "netflix": ("11101200001", frozenset({"netflix"})),
-    "youtube": ("111299001912", frozenset({"youtube", "youtube on tv"})),
-    "disney": ("3201901017640", frozenset({"disney+", "disney plus", "disneyplus"})),
-    "prime": ("org.tizen.ignition", frozenset({"prime video", "amazon prime video", "amazon video"})),
-    "plex": ("3201512006963", frozenset({"plex"})),
+    "netflix": (("3201907018807", "11101200001"), frozenset({"netflix"})),
+    "youtube": (("111299001912",), frozenset({"youtube", "youtube on tv"})),
+    "disney": (("3201901017640",), frozenset({"disney+", "disney plus", "disneyplus"})),
+    "prime": (("3201910019365", "3201512006785"), frozenset({"prime video", "amazon prime video", "amazon video"})),
+    "plex": (("3201512006963",), frozenset({"plex"})),
+    "apple": (("3201807016597",), frozenset({"apple tv", "apple tv+", "appletv", "appletv+", "appletvplus"})),
+    "magenta": (("3201907018746",), frozenset({"magentatv", "magenta tv", "magentatv 2.0", "telekom magentatv", "telekom magentatv 2.0"})),
+    "rtl": (("3201908018988",), frozenset({"rtl+", "rtl plus", "rtlplus", "tvnow", "tv now"})),
 }
 
 
@@ -88,22 +93,50 @@ def parse_dial_app_state(body: object, provider: str) -> str | None:
     return value if value in ("running", "stopped") else None
 
 
-def _parse_rest_state(body: bytes, provider: str) -> str | None:
+def rest_app_ids(provider: object) -> tuple[str, ...]:
+    """Return only the fixed public REST catalogue, with modern variants first."""
+    return _REST_APPS[provider][0] if isinstance(provider, str) and provider in _REST_APPS else ()
+
+
+def _name_key(value: str) -> str:
+    return "".join(char for char in value.casefold() if char.isalnum() or char == "+")
+
+
+def rest_app_url(host: IPv4Address, provider: str, app_id: str) -> str | None:
+    if not _private(host) or not isinstance(app_id, str) or app_id not in rest_app_ids(provider):
+        return None
+    return f"http://{host}:8001/api/v2/applications/{app_id}"
+
+
+def parse_rest_app_state(body: bytes, provider: str, app_id: str) -> str | None:
+    """Validate identity against the exact REST identifier that was queried."""
+    if (not isinstance(body, bytes) or len(body) > _MAX_BODY
+            or not isinstance(app_id, str) or app_id not in rest_app_ids(provider)):
+        return None
     try:
         value = json.loads(body)
     except (ValueError, UnicodeDecodeError, RecursionError):
         return None
     if not isinstance(value, dict):
         return None
-    app_id, names = _REST_APPS[provider]
+    _identifiers, names = _REST_APPS[provider]
+    name_keys = {_name_key(name) for name in names}
     identifier = value.get("id", value.get("appId"))
     name = value.get("name")
-    if identifier is not None and identifier != app_id:
+    if (identifier is not None and identifier != app_id
+            or ("appId" in value and value["appId"] != app_id)
+            or (name is not None and (not isinstance(name, str) or _name_key(name) not in name_keys))):
         return None
-    if identifier != app_id and (not isinstance(name, str) or name.strip().casefold() not in names):
+    if identifier != app_id and (not isinstance(name, str) or _name_key(name) not in name_keys):
         return None
     running = value.get("running")
     return ("running" if running else "stopped") if type(running) is bool else None
+
+
+def _parse_rest_state(body: bytes, provider: str) -> str | None:
+    """Compatibility wrapper for the first documented REST identifier."""
+    identifiers = rest_app_ids(provider)
+    return parse_rest_app_state(body, provider, identifiers[0]) if identifiers else None
 
 
 async def _read(session, url: str) -> tuple[int, bytes]:
@@ -118,7 +151,7 @@ async def _read(session, url: str) -> tuple[int, bytes]:
 
 
 async def async_probe_samsung_apps(session, host: IPv4Address, service: dict | None) -> list[dict]:
-    """At most seven GETs, two concurrent, within six seconds total.
+    """At most twelve GETs, two concurrent, within six seconds total.
 
     The caller owns a session with trust_env=False. Redirects stay disabled here;
     credentials are neither used nor forwarded by these public status requests.
@@ -129,20 +162,23 @@ async def async_probe_samsung_apps(session, host: IPv4Address, service: dict | N
     for provider in _DIAL_NAMES:
         url = dial_app_url(host, service, provider)
         if url is not None:
-            requests.append((provider, "dial", service["port"], url))
-    for provider, (identifier, _names) in _REST_APPS.items():
-        requests.append((provider, "rest", 8001, f"http://{host}:8001/api/v2/applications/{identifier}"))
+            requests.append((provider, "dial", service["port"], url, None))
+    for provider, (identifiers, _names) in _REST_APPS.items():
+        for identifier in identifiers:
+            requests.append((provider, "rest", 8001, rest_app_url(host, provider, identifier), identifier))
     records = [{"id": "samsung_app_status", "app": app, "protocol": protocol, "port": port,
-                "status": "unavailable", "state": "unknown", "reason": "budget_exhausted", "attempted": False}
-               for app, protocol, port, _url in requests]
+                "status": "skipped", "state": "unknown", "reason": "budget_exhausted", "attempted": False,
+                **({"app_id": identifier} if identifier is not None else {})}
+               for app, protocol, port, _url, identifier in requests]
     gate = asyncio.Semaphore(2)
 
     async def probe(index: int) -> None:
-        provider, protocol, _port, url = requests[index]
+        provider, protocol, _port, url, identifier = requests[index]
         record = records[index]
         try:
             async with gate:
                 record["attempted"] = True
+                record["status"] = "unavailable"
                 status, body = await _read(session, url)
             record["http_status"] = status
             if status != 200:
@@ -151,7 +187,7 @@ async def async_probe_samsung_apps(session, host: IPv4Address, service: dict | N
                               "http_denied" if status in (401, 403) else
                               "redirect_rejected" if 300 <= status < 400 else "http_error")
                 return
-            state = parse_dial_app_state(body, provider) if protocol == "dial" else _parse_rest_state(body, provider)
+            state = parse_dial_app_state(body, provider) if protocol == "dial" else parse_rest_app_state(body, provider, identifier)
             if state is None:
                 record["reason"] = "invalid_response"
             else:
@@ -163,9 +199,25 @@ async def async_probe_samsung_apps(session, host: IPv4Address, service: dict | N
         except (ClientError, OSError):
             record["reason"] = "connection_failed"
 
+    async def variants(indices: list[int]) -> None:
+        for offset, index in enumerate(indices):
+            await probe(index)
+            if records[index]["status"] == "available":
+                for unneeded in indices[offset + 1:]:
+                    records[unneeded]["reason"] = "variant_not_needed"
+                return
+
+    groups = []
+    for index, request in enumerate(requests):
+        key = request[0], request[1]
+        group = next((indices for group_key, indices in groups if group_key == key), None)
+        if group is None:
+            groups.append((key, [index]))
+        else:
+            group.append(index)
     try:
         async with asyncio.timeout(6):
-            await asyncio.gather(*(probe(index) for index in range(len(requests))))
+            await asyncio.gather(*(variants(indices) for _key, indices in groups))
     except TimeoutError:
         pass
     return records

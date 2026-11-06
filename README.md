@@ -2,7 +2,7 @@
 
 Benutzerdefinierte Home-Assistant-Integration mit einer eigenen Oberfläche für TV-Steuerung, Streaming-Favoriten und Direktstart-Diagnosen.
 
-**Version 0.2.31 · Beta**
+**Version 0.2.32 · Beta**
 
 ## Installation
 
@@ -71,7 +71,11 @@ Für die normale Steuerung zunächst den Fernseher beziehungsweise Zuspieler üb
 
 Läuft CinemaMode auf demselben Home Assistant wie die Fernseher, bleiben die Optionen für eine andere Home-Assistant-Instanz deaktiviert. URL, Zugriffsschlüssel und zusätzliche Entitätskennungen sind dafür nicht nötig. Für TV-Apps den jeweiligen Fernseher auch als Wiedergabegerät des Raums auswählen.
 
+Bei Samsung in beiden Auswahllisten den Eintrag mit der Anbindung **Samsung Smart TV** verwenden: als **Fernseher** und als **Wiedergabegerät**. Gleich benannte DLNA- oder SmartThings-Einträge sind andere Anbindungen desselben Geräts. Für die Apps direkt auf dem TV bleibt **HDMI-Eingang** leer. Die Anbindung wird neben dem Gerätenamen angezeigt, damit diese Einträge unterscheidbar sind.
+
 Bei Samsung und anderen Geräten mit Quellenwahl werden die App-Namen aus der aktuellen Quellenliste des ausgewählten Wiedergabegeräts automatisch zugeordnet. Zum Einrichten einer zusätzlichen App-Schaltfläche genügt **Nur App öffnen**; die **App-Zuordnung** bleibt auf **Automatisch erkennen**. Bei mehreren passenden Quellen kann die gewünschte Quelle aus einer Liste gewählt werden. Bereits ausdrücklich eingetragene Zuordnungen bleiben erhalten. Ein ausgeschalteter TV verhindert das Speichern des Raums nicht; die tatsächliche Quelle wird beim App-Aufruf geprüft.
+
+Meldet die native Samsung-Anbindung nur TV- und HDMI-Quellen, kann **Nur App öffnen** für bekannte Apps zusätzlich die lokale HTTP-Appsteuerung verwenden. CinemaMode liest zuerst den aktuellen App-Status am ausgewählten TV und sendet den Appstart nur bei einer passenden Antwort. Dazu ist kein manuell eingetragener Quellenname nötig. Ein solcher Appstart öffnet lediglich die App und bestätigt noch keinen Filmstart oder eine automatische Profilauswahl. Die **Standarddiagnose** führt weiterhin ausschließlich lesende Abfragen aus.
 
 - Vorhandene Gerätefunktionen wie Ein/Aus, Lautstärke, Quellenwahl und Navigation verwenden.
 - Filme, Folgen und Videos als Favoriten mit Inhaltslink und optionalem Bild speichern.

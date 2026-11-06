@@ -58,7 +58,9 @@ _APP_ALIASES = {
     "youtube": "youtube", "plex": "plex", "appletv": "apple", "appletv+": "apple",
 }
 _PUBLIC_APP_IDS = {"11101200001": "netflix", "3201901017640": "disney", "org.tizen.ignition": "prime",
-                   "111299001912": "youtube", "3201512006963": "plex"}
+                   "111299001912": "youtube", "3201512006963": "plex", "3201907018807": "netflix",
+                   "3201512006785": "prime", "3201910019365": "prime", "3201807016597": "apple",
+                   "3201907018746": "magenta", "3201908018988": "rtl"}
 _PUBLIC_CONSTANTS = {"module": {"LaunchHelper"}, "func": {"deeplink", "native", "launch"},
                      "action": {"DEEP_LINK", "NATIVE_LAUNCH", "action_play_url"},
                      "launch": {"launcher"}, "page": {"browse", "detail", "play"},
@@ -462,7 +464,7 @@ def _technical_values(report: dict) -> dict:
         for check in checks:
             if not isinstance(check, dict) or check.get("id") != check_id:
                 continue
-            value = {key: check.get(key) for key in ("status", "reason", "phase", "app", "protocol", "state", "port", "http_status", "close_code", "application_service", "evidence_level", "templates", "templates_truncated", "known_app_ids", "known_constants", "query_keys", "identity_match", "firmware_disagreement") if key in check}
+            value = {key: check.get(key) for key in ("status", "reason", "phase", "app", "app_id", "protocol", "state", "port", "http_status", "close_code", "application_service", "evidence_level", "templates", "templates_truncated", "known_app_ids", "known_constants", "query_keys", "identity_match", "firmware_disagreement") if key in check}
             capture = check.get("capture")
             value["capture_source"] = capture.get("source") if isinstance(capture, dict) else check.get("source")
             shapes = check.get("field_shapes")

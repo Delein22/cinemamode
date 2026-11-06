@@ -905,7 +905,8 @@ class CinemaManager:
             raise CinemaError("Diese App ist auf dem gewählten Wiedergabeziel noch nicht eingerichtet.")
         if favorite and not direct_title and app["mode"] != "link":
             raise CinemaError("Hier ist nur der Appstart eingerichtet. Bitte ausdrücklich ‚App öffnen‘ wählen.")
-        if provider == "netflix" and not direct_netflix and learned is None and not (app or {}).get("profile_name", "").strip():
+        if (provider == "netflix" and (favorite is not None or prepare_netflix)
+                and not direct_netflix and learned is None and not (app or {}).get("profile_name", "").strip()):
             raise CinemaError("Bitte unter Einrichtung → Raum bearbeiten → Netflix-Profil "
                               "den gewünschten Profilnamen speichern.", "profile_required")
         if favorite and favorite.get("playback") == "restart" and plex is None and (
@@ -926,6 +927,8 @@ class CinemaManager:
                "started_at": datetime.now(UTC).isoformat()}
         if learned:
             job["assistant_adapter"] = learned["adapter_id"]
+        if prepare_netflix:
+            job["prepare_netflix"] = True
         self.jobs[room_id] = job
         self._reserved.update(entities)
         self.tasks[room_id] = self.hass.async_create_task(
@@ -968,17 +971,54 @@ class CinemaManager:
             if not future.done():
                 future.cancel()
 
-    async def _open_app(self, target: dict, app: dict, context: Context, *, provider: str | None = None) -> dict:
+    async def _open_samsung_http_app(self, room: dict, target: dict, app: dict, provider: str) -> dict:
+        """Use a fresh app-specific service when native HA exposes only TV/HDMI sources."""
+        from .samsung_app_open import async_open_samsung_app
+
+        access = self.device_access.resolve(self, room, target)
+        signature = self.device_access.signature(room, target)
+
+        def validate() -> None:
+            current_room, current_target = self.resolve(room["id"], target["id"])
+            if (self.closed or current_room["tv_entity_id"] != room["tv_entity_id"]
+                    or current_target["entity_id"] != target["entity_id"]
+                    or current_target.get("profile") != target.get("profile")
+                    or current_target.get("apps") != target.get("apps")
+                    or self.platform(current_target["entity_id"]) != "samsungtv"
+                    or self.device_access.signature(current_room, current_target) != signature
+                    or self.device_access.resolve(self, current_room, current_target) != access):
+                raise CinemaError("Die Gerätezuordnung wurde geändert. Bitte den Appstart erneut ausführen.", "stale_device")
+            self._check_prepared(current_room, current_target)
+
+        result = await async_open_samsung_app(access, provider, validate)
+        return {**app, "app_id": result["app_id"], "launch_route": result["route"]}
+
+    async def _open_app(self, target: dict, app: dict, context: Context, *, provider: str | None = None,
+                        room: dict | None = None) -> dict:
         player = target["entity_id"]
         app = dict(app)
         if target["profile"] in ("generic", "samsungtv"):
             source_mode = app.get("source_mode", "manual" if app.get("app_id") else "auto")
             if source_mode == "auto":
                 state = self.hass.states.get(player)
-                app["app_id"] = resolve_auto_source(
-                    provider, state.attributes.get("source_list", []) if state else [],
-                    state.name if state else target.get("name", "das gewählte Gerät"),
-                )
+                platform = self.platform(player)
+                if platform == "dlna_dmr":
+                    raise CinemaError("Dieses Wiedergabegerät ist über DLNA verbunden und kann keine installierten TV-Apps öffnen. "
+                                      "Wähle unter Raum bearbeiten beim Fernseher und Wiedergabegerät die Samsung-TV-Entität.",
+                                      "wrong_device_platform")
+                try:
+                    app["app_id"] = resolve_auto_source(
+                        provider, state.attributes.get("source_list", []) if state else [],
+                        state.name if state else target.get("name", "das gewählte Gerät"),
+                    )
+                except CinemaError as error:
+                    if (error.code == "app_source_unavailable" and room is not None and platform == "samsungtv"
+                            and isinstance(provider, str)):
+                        return await self._open_samsung_http_app(room, target, app, provider)
+                    raise
+                if (room is not None and platform == "samsungtv" and isinstance(provider, str)
+                        and not self.has_feature(player, Feature.SELECT_SOURCE)):
+                    return await self._open_samsung_http_app(room, target, app, provider)
         if target["profile"] == "androidtv_remote":
             if not self.has_feature(player, Feature.PLAY_MEDIA):
                 raise CinemaError("Die Integration bietet keinen Appstart über play_media.")
@@ -1045,7 +1085,7 @@ class CinemaManager:
                     await self._service("media_player", "play_media", player, context,
                                         media_content_type="app", media_content_id=SAMSUNG_PLEX_APP_ID)
                 else:
-                    await self._open_app(target, {"app_id": "Plex"}, context)
+                    await self._open_app(target, {"app_id": "Plex", "source_mode": "auto"}, context, provider="plex", room=room)
                 rating_key = urlsplit(favorite["url"]).path.rsplit("/", 1)[-1]
                 playing = await plex.launch(async_get_clientsession(self.hass), rating_key,
                                             restart=favorite.get("playback") == "restart")
@@ -1122,12 +1162,17 @@ class CinemaManager:
                 return
             if provider == "netflix":
                 self._stage(job, "dispatching", "Netflix-App öffnen …")
-                app = await self._open_app(target, app, context, provider=provider)
-                await self._await_netflix_profile(room, target, job)
-                if not favorite:
+                app = await self._open_app(target, app, context, provider=provider, room=room)
+                if favorite or job.get("prepare_netflix"):
+                    await self._await_netflix_profile(room, target, job)
+                if not favorite and job.get("prepare_netflix"):
                     job["result"] = "profile_user_confirmed"
                     self._stage(job, "done", f"Profil ‚{app['profile_name']}‘ wurde von dir bestätigt. "
                                 "Kein Titel angefordert. Wähle die gewünschte Serie oder Folge am TV.")
+                    return
+                if not favorite:
+                    job["result"] = "command_sent"
+                    self._stage(job, "done", "Netflix-Appstart gesendet. Falls Netflix nachfragt, wähle dein Profil am Fernseher.")
                     return
             sent_at = datetime.now(UTC)
             self._stage(job, "dispatching", "Inhaltslink senden …" if favorite else "Appstart senden …")
@@ -1143,7 +1188,7 @@ class CinemaManager:
                 else:
                     raise CinemaError("Kein Inhaltslink-Verfahren für dieses Gerät eingerichtet.")
             else:
-                app = await self._open_app(target, app, context, provider=provider)
+                app = await self._open_app(target, app, context, provider=provider, room=room)
             job["result"] = "command_sent"
             self._stage(job, "observing", "Befehl gesendet. Warte auf Geräterückmeldung …")
             deadline = asyncio.get_running_loop().time() + FEEDBACK_TIMEOUT

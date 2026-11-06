@@ -1,7 +1,7 @@
 """Shared constants for the cinema control integration."""
 
 DOMAIN = "cinema_control"
-VERSION = "0.2.31"
+VERSION = "0.2.32"
 PANEL_PATH = "kinosteuerung"
 STORAGE_VERSION = 1
 PROVIDERS = {
